@@ -6,6 +6,20 @@
 
 > **English version**: [README.md](README.md)
 
+## Быстрая установка
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AndyShaman/3x-ui-skill/main/install.sh | bash
+```
+
+Или вручную:
+
+```bash
+git clone https://github.com/AndyShaman/3x-ui-skill.git
+cp -r 3x-ui-skill/skill ~/.claude/skills/3x-ui-setup
+rm -rf 3x-ui-skill
+```
+
 ## Обзор
 
 Скилл для Claude Code, который полностью автоматизирует развёртывание VPN-сервера на базе 3x-ui с протоколами VLESS Reality и VLESS TLS. Вы даёте свежий VPS (IP-адрес и root-пароль от провайдера) — скилл делает всё остальное: защищает сервер, устанавливает панель управления, настраивает прокси и помогает подключиться через клиент Hiddify.
@@ -47,19 +61,6 @@
   │   └─ Настройка клиента Hiddify
   │
   └─ ✅ Защищённый сервер + Работающий VPN
-```
-
-## Быстрая установка
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/AndyShaman/3x-ui-skill/main/install.sh | bash
-```
-
-## Ручная установка
-
-```bash
-git clone https://github.com/AndyShaman/3x-ui-skill.git
-cp -r 3x-ui-skill/skill ~/.claude/skills/3x-ui-setup
 ```
 
 ## Что входит

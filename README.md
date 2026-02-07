@@ -6,6 +6,20 @@
 
 > **Русская версия**: [README.ru.md](README.ru.md)
 
+## Quick Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AndyShaman/3x-ui-skill/main/install.sh | bash
+```
+
+Or manually:
+
+```bash
+git clone https://github.com/AndyShaman/3x-ui-skill.git
+cp -r 3x-ui-skill/skill ~/.claude/skills/3x-ui-setup
+rm -rf 3x-ui-skill
+```
+
 ## Overview
 
 A Claude Code skill that fully automates VPN server deployment on a fresh VPS. Hand it your server IP and root password — it handles everything from OS hardening to a working VLESS proxy with client setup instructions.
@@ -47,19 +61,6 @@ Fresh VPS (IP + root + password)
   |   +-- Hiddify client setup
   |
   +-- Done: Secured server + Working VPN
-```
-
-## Quick Start
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/AndyShaman/3x-ui-skill/main/install.sh | bash
-```
-
-## Manual Installation
-
-```bash
-git clone https://github.com/AndyShaman/3x-ui-skill.git
-cp -r 3x-ui-skill/skill ~/.claude/skills/3x-ui-setup
 ```
 
 ## What's Included
