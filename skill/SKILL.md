@@ -495,6 +495,27 @@ for inb in data.get(\"obj\", []):
 
 **Show the link to the user.** This is what they'll paste into Hiddify.
 
+**IMPORTANT: Terminal line-wrap fix.** Long VLESS links break when copied from terminal. ALWAYS provide the link in TWO formats:
+
+1. The raw link (for reference)
+2. A ready-to-copy block with LLM cleanup prompt:
+
+~~~
+Скопируй всё ниже и вставь в любой LLM (ChatGPT, Claude) чтобы получить чистую ссылку:
+
+Убери все переносы строк и лишние пробелы из этой ссылки, выдай одной строкой:
+
+{VLESS_LINK}
+~~~
+
+Also save the link to a file for easy access:
+
+```bash
+ssh {nickname} "echo '{VLESS_LINK}' > ~/vpn-link.txt"
+```
+
+Tell the user: **Ссылка также сохранена в файл ~/vpn-link.txt**
+
 Cleanup session cookie:
 ```bash
 ssh {nickname} "rm -f /tmp/3x-cookie"
