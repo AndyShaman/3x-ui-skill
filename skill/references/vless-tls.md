@@ -86,7 +86,7 @@ Tell user to:
 Login to API:
 
 ```bash
-ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "http://127.0.0.1:${PANEL_PORT}/{web_base_path}/login" -H "Content-Type: application/x-www-form-urlencoded" -d "username={panel_username}&password={panel_password}"'
+ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "https://127.0.0.1:${PANEL_PORT}/{web_base_path}/login" -H "Content-Type: application/x-www-form-urlencoded" -d "username={panel_username}&password={panel_password}"'
 ```
 
 Generate UUID:
@@ -98,7 +98,7 @@ ssh {nickname} "sudo /usr/local/x-ui/bin/xray-linux-* uuid"
 Create VLESS TLS inbound on port 443:
 
 ```bash
-ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "http://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/add" -H "Content-Type: application/json" -d '"'"'{
+ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "https://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/add" -H "Content-Type: application/json" -d '"'"'{
   "up": 0,
   "down": 0,
   "total": 0,
@@ -118,7 +118,7 @@ ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -c /tmp/3x-cookie -b /tmp/3x-co
 ## Step 7: Get Connection Link
 
 ```bash
-ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -b /tmp/3x-cookie "http://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/list" | python3 -c "
+ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -b /tmp/3x-cookie "https://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/list" | python3 -c "
 import json,sys
 data = json.load(sys.stdin)
 for inb in data.get(\"obj\", []):

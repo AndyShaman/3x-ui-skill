@@ -96,7 +96,7 @@ For **Local mode**, adapt as follows:
 | Step 12 | Write `~/.ssh/config` on LOCAL | **SKIP** -- do at the end (Step 22) |
 | Step 13 | Verify via `ssh {nickname}` | Run audit commands directly |
 | Part 2 | `ssh {nickname} "sudo ..."` | `sudo ...` directly (no SSH prefix) |
-| Panel access | Via SSH tunnel | Direct: `http://127.0.0.1:{panel_port}/{web_base_path}` |
+| Panel access | Via SSH tunnel | Direct: `https://127.0.0.1:{panel_port}/{web_base_path}` |
 | Step 22 | N/A (already done) | Setup SSH key access from user's computer |
 
 **IMPORTANT:** In both modes, the end result is the same -- user has SSH key access to the server from their local computer via `ssh {nickname}`.
@@ -140,7 +140,7 @@ ssh root@{SERVER_IP}
 ## Step 3: System Update (as root on server)
 
 ```bash
-apt update && apt upgrade -y
+apt update && DEBIAN_FRONTEND=noninteractive apt upgrade -y
 ```
 
 ## Step 4: Create Non-Root User
@@ -308,10 +308,12 @@ All commands from here use `ssh {nickname}` -- the shortcut configured in Part 1
 3x-ui install script requires root. Run with sudo:
 
 ```bash
-ssh {nickname} "sudo bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) <<< 'n'"
+ssh {nickname} "curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh -o /tmp/3x-ui-install.sh && echo 'n' | sudo bash /tmp/3x-ui-install.sh"
 ```
 
-The `<<< 'n'` answers "no" to port customization prompt -- a random port and credentials will be generated.
+The `echo 'n'` answers "no" to port customization prompt -- a random port and credentials will be generated.
+
+**Note:** Do NOT use `sudo bash <(curl ...)` -- process substitution does not work with sudo (file descriptors are not inherited).
 
 **IMPORTANT:** Capture the output! It contains:
 - Generated **username**
@@ -327,7 +329,7 @@ Extract and save these values. Show them to the user:
   Password: {panel_password}
   Port:     {panel_port}
   Path:     {web_base_path}
-  URL:      http://127.0.0.1:{panel_port}/{web_base_path} (через SSH-туннель)
+  URL:      https://127.0.0.1:{panel_port}/{web_base_path} (через SSH-туннель)
 ```
 
 Verify 3x-ui is running:
@@ -370,21 +372,25 @@ Go to `references/vless-tls.md`.
 Download and run Reality Scanner to find optimal SNI/Target for the server's network:
 
 ```bash
-ssh {nickname} 'ARCH=$(dpkg --print-architecture) && curl -sL "https://github.com/XTLS/RealiTLScanner/releases/latest/download/RealiTLScanner-linux-${ARCH}" -o /tmp/scanner && chmod +x /tmp/scanner && timeout 30 /tmp/scanner --addr $(curl -s ifconfig.me) 2>&1 | head -30'
+ssh {nickname} 'ARCH=$(dpkg --print-architecture); case "$ARCH" in amd64) SA="64";; arm64|aarch64) SA="arm64-v8a";; *) SA="$ARCH";; esac && curl -sL "https://github.com/XTLS/RealiTLScanner/releases/latest/download/RealiTLScanner-linux-${SA}" -o /tmp/scanner && chmod +x /tmp/scanner && file /tmp/scanner | grep -q ELF && timeout 30 /tmp/scanner --addr $(curl -s ifconfig.me) 2>&1 | head -30 || echo "ERROR: scanner binary not valid for this architecture"'
 ```
+
+**Note:** GitHub releases use non-standard arch names (`64` instead of `amd64`, `arm64-v8a` instead of `arm64`). The `case` block maps them. The `file | grep ELF` check ensures the download is a real binary, not a 404 HTML page.
 
 Look for well-known domains (github.com, microsoft.com, twitch.tv, etc.) in the output.
 
-**If scanner finds nothing** -- use default `www.google.com`.
+**If scanner finds nothing or times out** -- use a reliable fallback SNI: `yahoo.com`, `www.microsoft.com`, or `www.google.com`. Some hosting providers (e.g., OVH) have subnets where the scanner finds no nearby TLS servers -- this is normal, fallback SNI will work.
 
 Save the best SNI (e.g., `github.com`) for the next step.
 
 ## Step 18A: Create VLESS Reality Inbound via API
 
-3x-ui has an API. First, get session cookie:
+3x-ui has an API. Since v2.8+, the installer auto-configures SSL, so the panel runs on HTTPS. Use `-k` to skip certificate verification (self-signed cert on localhost).
+
+First, get session cookie:
 
 ```bash
-ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "http://127.0.0.1:${PANEL_PORT}/{web_base_path}/login" -H "Content-Type: application/x-www-form-urlencoded" -d "username={panel_username}&password={panel_password}"'
+ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "https://127.0.0.1:${PANEL_PORT}/{web_base_path}/login" -H "Content-Type: application/x-www-form-urlencoded" -d "username={panel_username}&password={panel_password}"'
 ```
 
 Generate keys for Reality:
@@ -410,7 +416,7 @@ ssh {nickname} "openssl rand -hex 8"
 Create the inbound:
 
 ```bash
-ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "http://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/add" -H "Content-Type: application/json" -d '"'"'{
+ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "https://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/add" -H "Content-Type: application/json" -d '"'"'{
   "up": 0,
   "down": 0,
   "total": 0,
@@ -437,7 +443,7 @@ If API fails, user can access panel in browser:
 ssh -L {panel_port}:127.0.0.1:{panel_port} {nickname}
 ```
 
-Then open in browser: `http://127.0.0.1:{panel_port}/{web_base_path}`
+Then open in browser: `https://127.0.0.1:{panel_port}/{web_base_path}` (browser will warn about self-signed cert -- accept it)
 
 Guide user through the UI:
 1. Login with generated credentials
@@ -455,7 +461,7 @@ Guide user through the UI:
 Get the client connection link from 3x-ui API:
 
 ```bash
-ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -b /tmp/3x-cookie "http://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/list" | python3 -c "
+ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -b /tmp/3x-cookie "https://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/list" | python3 -c "
 import json,sys
 data = json.load(sys.stdin)
 for inb in data.get(\"obj\", []):
@@ -626,7 +632,7 @@ VPN-сервер полностью настроен и работает!
    ICMP отключён (сервер не пингуется)
 
 Панель 3x-ui:
-   URL:      http://127.0.0.1:{panel_port}/{web_base_path} (через SSH-туннель)
+   URL:      https://127.0.0.1:{panel_port}/{web_base_path} (через SSH-туннель)
    Login:    {panel_username}
    Password: {panel_password}
 
@@ -646,7 +652,7 @@ VPN-подключение:
 
 SSH-туннель к админке:
    ssh -L {panel_port}:127.0.0.1:{panel_port} {nickname}
-   Затем открыть: http://127.0.0.1:{panel_port}/{web_base_path}
+   Затем открыть: https://127.0.0.1:{panel_port}/{web_base_path}
 
 Добавить нового клиента:
    Открой админку -> Inbounds -> ... -> Add Client
