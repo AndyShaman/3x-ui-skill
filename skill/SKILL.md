@@ -70,7 +70,7 @@ First, determine **execution mode**:
 
 In Local mode, get server IP automatically:
 ```bash
-curl -s ifconfig.me
+curl -4 -s ifconfig.me
 ```
 
 If user pastes the full provider email, extract the data from it.
@@ -140,7 +140,7 @@ ssh root@{SERVER_IP}
 ## Step 3: System Update (as root on server)
 
 ```bash
-apt update && DEBIAN_FRONTEND=noninteractive apt upgrade -y
+apt update && DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt upgrade -y
 ```
 
 ## Step 4: Create Non-Root User
@@ -372,7 +372,7 @@ Go to `references/vless-tls.md`.
 Download and run Reality Scanner to find optimal SNI/Target for the server's network:
 
 ```bash
-ssh {nickname} 'ARCH=$(dpkg --print-architecture); case "$ARCH" in amd64) SA="64";; arm64|aarch64) SA="arm64-v8a";; *) SA="$ARCH";; esac && curl -sL "https://github.com/XTLS/RealiTLScanner/releases/latest/download/RealiTLScanner-linux-${SA}" -o /tmp/scanner && chmod +x /tmp/scanner && file /tmp/scanner | grep -q ELF && timeout 30 /tmp/scanner --addr $(curl -s ifconfig.me) 2>&1 | head -30 || echo "ERROR: scanner binary not valid for this architecture"'
+ssh {nickname} 'ARCH=$(dpkg --print-architecture); case "$ARCH" in amd64) SA="64";; arm64|aarch64) SA="arm64-v8a";; *) SA="$ARCH";; esac && curl -sL "https://github.com/XTLS/RealiTLScanner/releases/latest/download/RealiTLScanner-linux-${SA}" -o /tmp/scanner && chmod +x /tmp/scanner && file /tmp/scanner | grep -q ELF && timeout 30 /tmp/scanner --addr $(curl -4 -s ifconfig.me) 2>&1 | head -30 || echo "ERROR: scanner binary not valid for this architecture"'
 ```
 
 **Note:** GitHub releases use non-standard arch names (`64` instead of `amd64`, `arm64-v8a` instead of `arm64`). The `case` block maps them. The `file | grep ELF` check ensures the download is a real binary, not a 404 HTML page.
@@ -384,6 +384,14 @@ Look for well-known domains (github.com, microsoft.com, twitch.tv, etc.) in the 
 Save the best SNI (e.g., `github.com`) for the next step.
 
 ## Step 18A: Create VLESS Reality Inbound via API
+
+**Pre-check:** Verify port 443 is not occupied by another service (some providers pre-install apache2/nginx):
+
+```bash
+ssh {nickname} "ss -tlnp | grep ':443 '"
+```
+
+If something is listening on 443, stop and disable it first (e.g., `sudo systemctl stop apache2 && sudo systemctl disable apache2`). Otherwise the VLESS inbound will silently fail to bind.
 
 3x-ui has an API. Since v2.8+, the installer auto-configures SSL, so the panel runs on HTTPS. Use `-k` to skip certificate verification (self-signed cert on localhost).
 
@@ -399,7 +407,7 @@ Generate keys for Reality:
 ssh {nickname} "sudo /usr/local/x-ui/bin/xray-linux-* x25519"
 ```
 
-This outputs Private key and Public key. Save both.
+This outputs two lines: `PrivateKey` = private key, `Password` = **public key** (confusing naming by xray). Save both.
 
 Generate UUID for the client:
 
@@ -479,7 +487,7 @@ for inb in data.get(\"obj\", []):
             sid = rs[\"shortIds\"][0]
             fp = rs[\"settings\"].get(\"fingerprint\", \"chrome\")
             flow = client.get(\"flow\", \"\")
-            link = f\"vless://{uuid}@$(curl -s ifconfig.me):{port}?type=tcp&security=reality&pbk={pbk}&fp={fp}&sni={sni}&sid={sid}&spx=%2F&flow={flow}#vless-reality\"
+            link = f\"vless://{uuid}@$(curl -4 -s ifconfig.me):{port}?type=tcp&security=reality&pbk={pbk}&fp={fp}&sni={sni}&sid={sid}&spx=%2F&flow={flow}#vless-reality\"
             print(link)
             break
 "'
