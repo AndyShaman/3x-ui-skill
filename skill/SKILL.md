@@ -1,0 +1,699 @@
+---
+name: 3x-ui-setup
+description: Complete VPN server setup from scratch. Takes a fresh VPS (IP + root + password from hosting provider) through full server hardening and 3x-ui (Xray proxy panel) installation with VLESS Reality or VLESS TLS. Guides user through connecting via Hiddify client. Use when user mentions v2ray, xray, vless, 3x-ui, proxy server, vpn server, or wants to set up encrypted proxy access on a VPS. Designed for beginners — hand-holds through every step.
+allowed-tools: Bash,Read,Write,Edit
+---
+
+# VPN Server Setup (3x-ui)
+
+Complete setup: fresh VPS from provider → secured server → working VPN with Hiddify client.
+
+## Workflow Overview
+
+```
+ЧАСТЬ 1: Настройка сервера
+  Fresh VPS (IP + root + password)
+    → Determine execution mode (remote or local)
+    → Generate SSH key / setup access
+    → Connect as root
+    → Update system
+    → Create non-root user + sudo
+    → Install SSH key
+    → TEST new user login (critical!)
+    → Disable root + password auth
+    → Firewall (ufw)
+    → fail2ban
+    → Kernel hardening
+    → Time sync + packages
+    → Configure local ~/.ssh/config
+    → ✅ Server secured
+
+ЧАСТЬ 2: Установка VPN (3x-ui)
+    → Install 3x-ui panel
+    → Disable ICMP (stealth)
+    → Reality: scanner → create inbound → get link
+    → Install Hiddify client
+    → Verify connection
+    → Setup SSH access from user's computer (if local mode)
+    → ✅ VPN working
+```
+
+---
+
+# PART 1: Server Hardening
+
+Secure a fresh server from provider credentials to production-ready state.
+
+## Step 0: Collect Information
+
+First, determine **execution mode**:
+
+**Где запущен Claude Code?**
+- **На локальном компьютере** (Remote mode) -- настраиваем удалённый сервер через SSH
+- **На самом сервере** (Local mode) -- настраиваем этот же сервер напрямую
+
+### Remote Mode -- ASK the user for:
+
+1. **Server IP** -- from provider email
+2. **Root password** -- from provider email
+3. **Desired username** -- for the new non-root account
+4. **Server nickname** -- for SSH config (e.g., `myserver`, `vpn1`)
+5. **Has domain?** -- if unsure, recommend "no" (Reality path, simpler)
+6. **Domain name** (if yes to #5) -- must already point to server IP
+
+### Local Mode -- ASK the user for:
+
+1. **Desired username** -- for the new non-root account
+2. **Server nickname** -- for future SSH access from user's computer (e.g., `myserver`, `vpn1`)
+3. **Has domain?** -- if unsure, recommend "no" (Reality path, simpler)
+4. **Domain name** (if yes to #3) -- must already point to server IP
+
+In Local mode, get server IP automatically:
+```bash
+curl -s ifconfig.me
+```
+
+If user pastes the full provider email, extract the data from it.
+
+**Recommend Reality (no domain) for beginners.** Explain:
+- Reality: works without domain, free, simpler setup, great performance
+- TLS: needs domain purchase (~$10/year), more traditional, allows fallback site
+
+## Execution Modes
+
+All commands in this skill are written for **Remote mode** (via SSH).
+For **Local mode**, adapt as follows:
+
+| Step | Remote Mode (default) | Local Mode |
+|------|----------------------|------------|
+| Step 1 | Generate SSH key on LOCAL machine | **SKIP** -- do at the end (Step 22) |
+| Step 2 | `ssh root@{SERVER_IP}` | Already on server. If not root: `sudo su -` |
+| Steps 3-4 | Run on server via root SSH | Run directly (already on server) |
+| Step 5 | Install local public key on server | **SKIP** -- do at the end (Step 22) |
+| Step 6 | SSH test from LOCAL: `ssh -i ... user@IP` | Switch user: `su - {username}`, then `sudo whoami` |
+| Step 7 | Lock SSH via user session | Same -- lock SSH (affects future remote connections) |
+| Steps 8-11 | `sudo` on server via SSH | `sudo` directly (no SSH prefix) |
+| Step 12 | Write `~/.ssh/config` on LOCAL | **SKIP** -- do at the end (Step 22) |
+| Step 13 | Verify via `ssh {nickname}` | Run audit commands directly |
+| Part 2 | `ssh {nickname} "sudo ..."` | `sudo ...` directly (no SSH prefix) |
+| Panel access | Via SSH tunnel | Direct: `http://127.0.0.1:{panel_port}/{web_base_path}` |
+| Step 22 | N/A (already done) | Setup SSH key access from user's computer |
+
+**IMPORTANT:** In both modes, the end result is the same -- user has SSH key access to the server from their local computer via `ssh {nickname}`.
+
+## Step 1: Generate SSH Key (LOCAL)
+
+Run on the user's LOCAL machine BEFORE connecting to the server:
+
+```bash
+ssh-keygen -t ed25519 -C "{username}@{nickname}" -f ~/.ssh/{nickname}_key -N ""
+```
+
+Save the public key content for later:
+```bash
+cat ~/.ssh/{nickname}_key.pub
+```
+
+## Step 2: First Connection as Root
+
+```bash
+ssh root@{SERVER_IP}
+```
+
+### Handling forced password change
+
+Many providers force a password change on first login. Signs:
+- Prompt: "You are required to change your password immediately"
+- Prompt: "Current password:" followed by "New password:"
+- Prompt: "WARNING: Your password has expired"
+
+If this happens:
+1. Enter the current (provider) password
+2. Enter a new strong temporary password (this is temporary -- SSH keys will replace it)
+3. You may be disconnected -- reconnect with the new password
+
+**If connection drops after password change -- this is normal.** Reconnect:
+```bash
+ssh root@{SERVER_IP}
+```
+
+## Step 3: System Update (as root on server)
+
+```bash
+apt update && apt upgrade -y
+```
+
+## Step 4: Create Non-Root User
+
+```bash
+useradd -m -s /bin/bash {username}
+echo "{username}:{GENERATE_STRONG_PASSWORD}" | chpasswd
+usermod -aG sudo {username}
+```
+
+Generate a strong random password. Tell the user to save it (needed for sudo). Then:
+
+```bash
+# Verify
+groups {username}
+```
+
+## Step 5: Install SSH Key for New User
+
+```bash
+mkdir -p /home/{username}/.ssh
+echo "{PUBLIC_KEY_CONTENT}" > /home/{username}/.ssh/authorized_keys
+chmod 700 /home/{username}/.ssh
+chmod 600 /home/{username}/.ssh/authorized_keys
+chown -R {username}:{username} /home/{username}/.ssh
+```
+
+## Step 6: TEST New User Login -- CRITICAL CHECKPOINT
+
+**DO NOT proceed without successful test!**
+
+Open a NEW connection (keep root session alive):
+```bash
+ssh -i ~/.ssh/{nickname}_key {username}@{SERVER_IP}
+```
+
+Verify sudo works:
+```bash
+sudo whoami
+# Must output: root
+```
+
+**If this fails** -- debug permissions, do NOT disable root login:
+```bash
+# Check on server as root:
+ls -la /home/{username}/.ssh/
+cat /home/{username}/.ssh/authorized_keys
+# Fix ownership:
+chown -R {username}:{username} /home/{username}/.ssh
+```
+
+## Step 7: Lock Down SSH
+
+Only after Step 6 succeeds:
+
+```bash
+sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sudo systemctl restart sshd
+```
+
+## Step 8: Firewall
+
+```bash
+sudo apt install -y ufw
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow ssh
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw --force enable
+sudo ufw status
+```
+
+## Step 9: fail2ban
+
+```bash
+sudo apt install -y fail2ban
+sudo tee /etc/fail2ban/jail.local << 'EOF'
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 24h
+EOF
+sudo systemctl enable fail2ban
+sudo systemctl restart fail2ban
+```
+
+## Step 10: Kernel Hardening
+
+```bash
+sudo tee /etc/sysctl.d/99-security.conf << 'EOF'
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.tcp_syncookies = 1
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+EOF
+sudo sysctl -p /etc/sysctl.d/99-security.conf
+```
+
+## Step 11: Time Sync + Base Packages
+
+```bash
+sudo apt install -y chrony curl wget unzip net-tools
+sudo systemctl enable chrony
+```
+
+## Step 12: Configure Local SSH Config
+
+On the user's LOCAL machine:
+
+```bash
+cat >> ~/.ssh/config << 'EOF'
+
+Host {nickname}
+    HostName {SERVER_IP}
+    User {username}
+    IdentityFile ~/.ssh/{nickname}_key
+    IdentitiesOnly yes
+EOF
+```
+
+Tell user: **Теперь подключайся командой `ssh {nickname}` -- без пароля и IP.**
+
+## Step 13: Final Verification
+
+Connect as new user and run quick audit:
+```bash
+ssh {nickname}
+# Then on server:
+grep -E "PermitRootLogin|PasswordAuthentication" /etc/ssh/sshd_config
+sudo ufw status
+sudo systemctl status fail2ban --no-pager
+sudo sysctl net.ipv4.conf.all.rp_filter
+```
+
+Expected: root login disabled, password auth disabled, ufw active, fail2ban running, rp_filter = 1.
+
+**Part 1 complete. Server is secured. Proceeding to VPN installation.**
+
+---
+
+# PART 2: VPN Installation (3x-ui)
+
+All commands from here use `ssh {nickname}` -- the shortcut configured in Part 1.
+
+## Step 14: Install 3x-ui
+
+3x-ui install script requires root. Run with sudo:
+
+```bash
+ssh {nickname} "sudo bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) <<< 'n'"
+```
+
+The `<<< 'n'` answers "no" to port customization prompt -- a random port and credentials will be generated.
+
+**IMPORTANT:** Capture the output! It contains:
+- Generated **username**
+- Generated **password**
+- Panel **port**
+- Panel **web base path**
+
+Extract and save these values. Show them to the user:
+
+```
+Данные панели 3x-ui (СОХРАНИ!):
+  Username: {panel_username}
+  Password: {panel_password}
+  Port:     {panel_port}
+  Path:     {web_base_path}
+  URL:      http://127.0.0.1:{panel_port}/{web_base_path} (через SSH-туннель)
+```
+
+Verify 3x-ui is running:
+
+```bash
+ssh {nickname} "sudo x-ui status"
+```
+
+If not running: `ssh {nickname} "sudo x-ui start"`
+
+**Panel port is NOT opened in firewall intentionally** -- access panel only via SSH tunnel for security.
+
+## Step 15: Disable ICMP (Stealth)
+
+Makes server invisible to ping scans:
+
+```bash
+ssh {nickname} "sudo sed -i 's/-A ufw-before-input -p icmp --icmp-type echo-request -j ACCEPT/-A ufw-before-input -p icmp --icmp-type echo-request -j DROP/' /etc/ufw/before.rules && sudo sed -i 's/-A ufw-before-forward -p icmp --icmp-type echo-request -j ACCEPT/-A ufw-before-forward -p icmp --icmp-type echo-request -j DROP/' /etc/ufw/before.rules && sudo ufw reload"
+```
+
+Verify:
+```bash
+ping -c 2 -W 2 {SERVER_IP}
+```
+
+Expected: no response (timeout).
+
+## Step 16: Branch -- Reality or TLS
+
+### Path A: VLESS Reality (NO domain needed) -- RECOMMENDED
+
+Go to Step 17A.
+
+### Path B: VLESS TLS (domain required)
+
+Go to `references/vless-tls.md`.
+
+## Step 17A: Find Best SNI with Reality Scanner
+
+Download and run Reality Scanner to find optimal SNI/Target for the server's network:
+
+```bash
+ssh {nickname} 'ARCH=$(dpkg --print-architecture) && curl -sL "https://github.com/XTLS/RealiTLScanner/releases/latest/download/RealiTLScanner-linux-${ARCH}" -o /tmp/scanner && chmod +x /tmp/scanner && timeout 30 /tmp/scanner --addr $(curl -s ifconfig.me) 2>&1 | head -30'
+```
+
+Look for well-known domains (github.com, microsoft.com, twitch.tv, etc.) in the output.
+
+**If scanner finds nothing** -- use default `www.google.com`.
+
+Save the best SNI (e.g., `github.com`) for the next step.
+
+## Step 18A: Create VLESS Reality Inbound via API
+
+3x-ui has an API. First, get session cookie:
+
+```bash
+ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "http://127.0.0.1:${PANEL_PORT}/{web_base_path}/login" -H "Content-Type: application/x-www-form-urlencoded" -d "username={panel_username}&password={panel_password}"'
+```
+
+Generate keys for Reality:
+
+```bash
+ssh {nickname} "sudo /usr/local/x-ui/bin/xray-linux-* x25519"
+```
+
+This outputs Private key and Public key. Save both.
+
+Generate UUID for the client:
+
+```bash
+ssh {nickname} "sudo /usr/local/x-ui/bin/xray-linux-* uuid"
+```
+
+Generate random Short ID:
+
+```bash
+ssh {nickname} "openssl rand -hex 8"
+```
+
+Create the inbound:
+
+```bash
+ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "http://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/add" -H "Content-Type: application/json" -d '"'"'{
+  "up": 0,
+  "down": 0,
+  "total": 0,
+  "remark": "vless-reality",
+  "enable": true,
+  "expiryTime": 0,
+  "listen": "",
+  "port": 443,
+  "protocol": "vless",
+  "settings": "{\"clients\":[{\"id\":\"{CLIENT_UUID}\",\"flow\":\"xtls-rprx-vision\",\"email\":\"user1\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true}],\"decryption\":\"none\",\"fallbacks\":[]}",
+  "streamSettings": "{\"network\":\"tcp\",\"security\":\"reality\",\"externalProxy\":[],\"realitySettings\":{\"show\":false,\"xver\":0,\"dest\":\"{BEST_SNI}:443\",\"serverNames\":[\"{BEST_SNI}\"],\"privateKey\":\"{PRIVATE_KEY}\",\"minClient\":\"\",\"maxClient\":\"\",\"maxTimediff\":0,\"shortIds\":[\"{SHORT_ID}\"],\"settings\":{\"publicKey\":\"{PUBLIC_KEY}\",\"fingerprint\":\"chrome\",\"serverName\":\"\",\"spiderX\":\"/\"}},\"tcpSettings\":{\"acceptProxyProtocol\":false,\"header\":{\"type\":\"none\"}}}",
+  "sniffing": "{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\",\"fakedns\"],\"metadataOnly\":false,\"routeOnly\":false}",
+  "allocate": "{\"strategy\":\"always\",\"refresh\":5,\"concurrency\":3}"
+}'"'"''
+```
+
+**If API approach fails** -- tell user to access panel via SSH tunnel (Step 18A-alt).
+
+### Step 18A-alt: SSH Tunnel to Panel (manual fallback)
+
+If API fails, user can access panel in browser:
+
+```bash
+ssh -L {panel_port}:127.0.0.1:{panel_port} {nickname}
+```
+
+Then open in browser: `http://127.0.0.1:{panel_port}/{web_base_path}`
+
+Guide user through the UI:
+1. Login with generated credentials
+2. Inbounds -> Add Inbound
+3. Protocol: VLESS
+4. Port: 443
+5. Security: Reality
+6. Client Flow: xtls-rprx-vision
+7. Target & SNI: paste the best SNI from scanner
+8. Click "Get New Cert" for keys
+9. Create
+
+## Step 19: Get Connection Link
+
+Get the client connection link from 3x-ui API:
+
+```bash
+ssh {nickname} 'PANEL_PORT={panel_port}; curl -s -b /tmp/3x-cookie "http://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/list" | python3 -c "
+import json,sys
+data = json.load(sys.stdin)
+for inb in data.get(\"obj\", []):
+    if inb.get(\"protocol\") == \"vless\":
+        settings = json.loads(inb[\"settings\"])
+        stream = json.loads(inb[\"streamSettings\"])
+        client = settings[\"clients\"][0]
+        uuid = client[\"id\"]
+        port = inb[\"port\"]
+        security = stream.get(\"security\", \"none\")
+        if security == \"reality\":
+            rs = stream[\"realitySettings\"]
+            sni = rs[\"serverNames\"][0]
+            pbk = rs[\"settings\"][\"publicKey\"]
+            sid = rs[\"shortIds\"][0]
+            fp = rs[\"settings\"].get(\"fingerprint\", \"chrome\")
+            flow = client.get(\"flow\", \"\")
+            link = f\"vless://{uuid}@$(curl -s ifconfig.me):{port}?type=tcp&security=reality&pbk={pbk}&fp={fp}&sni={sni}&sid={sid}&spx=%2F&flow={flow}#vless-reality\"
+            print(link)
+            break
+"'
+```
+
+**Show the link to the user.** This is what they'll paste into Hiddify.
+
+Cleanup session cookie:
+```bash
+ssh {nickname} "rm -f /tmp/3x-cookie"
+```
+
+## Step 20: Guide User -- Install Hiddify Client
+
+Tell the user:
+
+```
+Теперь установи клиент Hiddify на своё устройство:
+
+Android:  Google Play -> "Hiddify" или https://github.com/hiddify/hiddify-app/releases
+iOS:      App Store -> "Hiddify"
+Windows:  https://github.com/hiddify/hiddify-app/releases (скачай .exe)
+macOS:    https://github.com/hiddify/hiddify-app/releases (скачай .dmg)
+Linux:    https://github.com/hiddify/hiddify-app/releases (.deb или .AppImage)
+
+После установки:
+1. Открой Hiddify
+2. Нажми "+" или "Add Profile"
+3. Выбери "Add from clipboard" (ссылка уже скопирована)
+4. Или отсканируй QR-код (я могу его показать)
+5. Нажми кнопку подключения (большая кнопка в центре)
+6. Готово! Проверь IP на сайте: https://2ip.ru
+```
+
+## Step 21: Verify Connection Works
+
+After user connects via Hiddify, verify:
+
+```bash
+ssh {nickname} "sudo x-ui status && ss -tlnp | grep -E '443|{panel_port}'"
+```
+
+## Step 22: Setup SSH Access from User's Computer (Local Mode ONLY)
+
+**This step is ONLY for Local mode.** In Remote mode, SSH access was configured in Steps 1, 5, 12 -- skip this.
+
+In Local mode, Claude Code runs on the server and cannot directly execute commands on the user's local computer (laptop behind NAT, no SSH server). Offer two варианта:
+
+ASK user:
+
+```
+Теперь нужно настроить SSH-доступ с твоего компьютера к серверу.
+Есть два варианта:
+
+Вариант А (простой): Я сгенерирую SSH-ключ на сервере, покажу тебе приватный ключ,
+ ты скопируешь его к себе на компьютер и пропишешь SSH-конфиг (3 действия).
+
+Вариант Б (автоматический): VPN уже работает — подключись через Hiddify,
+ установи Claude Code на своём компьютере, и он сам всё настроит автоматически.
+```
+
+### Option A: Manual Key Copy
+
+#### A1: Generate key pair on server
+
+```bash
+ssh-keygen -t ed25519 -C "{username}@{nickname}" -f /tmp/{nickname}_key -N ""
+```
+
+#### A2: Install public key
+
+```bash
+mkdir -p /home/{username}/.ssh
+cat /tmp/{nickname}_key.pub >> /home/{username}/.ssh/authorized_keys
+chmod 700 /home/{username}/.ssh
+chmod 600 /home/{username}/.ssh/authorized_keys
+chown -R {username}:{username} /home/{username}/.ssh
+```
+
+#### A3: Show private key to user
+
+```bash
+cat /tmp/{nickname}_key
+```
+
+Tell the user:
+
+```
+Скопируй ключ выше и сохрани на своём компьютере:
+
+1. Создай файл ~/.ssh/{nickname}_key и вставь в него содержимое ключа
+2. Выполни в терминале: chmod 600 ~/.ssh/{nickname}_key
+3. Добавь в файл ~/.ssh/config:
+
+Host {nickname}
+    HostName {SERVER_IP}
+    User {username}
+    IdentityFile ~/.ssh/{nickname}_key
+    IdentitiesOnly yes
+
+Проверь: ssh {nickname}
+```
+
+#### A4: Delete private key from server
+
+**IMPORTANT:** Private key must NOT remain on the server.
+
+```bash
+rm -f /tmp/{nickname}_key /tmp/{nickname}_key.pub
+```
+
+### Option B: Via Claude Code on Local Machine
+
+Tell the user:
+
+```
+1. Подключись к VPN через Hiddify (ссылка уже добавлена)
+2. Установи Claude Code на своём компьютере: https://claude.ai/download
+3. Запусти Claude Code и скажи ему:
+
+   "Настрой мне SSH-доступ к серверу {SERVER_IP},
+    пользователь {username}, nickname {nickname}"
+
+Claude Code на твоём компьютере сам создаст ключ, отправит его на сервер
+и пропишет SSH-конфиг. Всё автоматически.
+```
+
+---
+
+## Completion Summary
+
+Print this summary for the user:
+
+```
+VPN-сервер полностью настроен и работает!
+
+Подключение к серверу:
+   Команда:     ssh {nickname}
+   IP:          {SERVER_IP}
+   Пользователь: {username}
+   SSH-ключ:    ~/.ssh/{nickname}_key
+   Пароль sudo: {sudo_password}
+
+Безопасность сервера:
+   Root-вход отключён
+   Парольный вход отключён
+   Файрвол включён (порты: SSH, 80, 443)
+   fail2ban защищает от брутфорса
+   Ядро усилено (sysctl)
+   ICMP отключён (сервер не пингуется)
+
+Панель 3x-ui:
+   URL:      http://127.0.0.1:{panel_port}/{web_base_path} (через SSH-туннель)
+   Login:    {panel_username}
+   Password: {panel_password}
+
+VPN-подключение:
+   Протокол:  VLESS Reality
+   Порт:      443
+   SNI:       {best_sni}
+
+Клиент:
+   Hiddify -- ссылка добавлена
+
+Управление (через SSH):
+   ssh {nickname}                           # подключиться к серверу
+   ssh {nickname} "sudo x-ui status"        # статус панели
+   ssh {nickname} "sudo x-ui restart"       # перезапустить панель
+   ssh {nickname} "sudo x-ui log"           # логи
+
+SSH-туннель к админке:
+   ssh -L {panel_port}:127.0.0.1:{panel_port} {nickname}
+   Затем открыть: http://127.0.0.1:{panel_port}/{web_base_path}
+
+Добавить нового клиента:
+   Открой админку -> Inbounds -> ... -> Add Client
+   Скинь ссылку или QR-код другому человеку
+```
+
+## Critical Rules
+
+### Part 1 (Server)
+1. **NEVER skip Step 6** (test login) -- user can be locked out permanently
+2. **NEVER disable root before confirming new user works**
+3. **NEVER store passwords in files** -- only display once to user
+4. **If connection drops** after password change -- reconnect, this is normal
+5. **If Step 6 fails** -- fix it before proceeding, keep root session open
+6. **Generate SSH key BEFORE first connection** -- more efficient workflow
+7. **All operations after Step 7 use sudo** -- not root
+
+### Part 2 (VPN)
+8. **NEVER expose panel to internet** -- access only via SSH tunnel
+9. **NEVER skip firewall configuration** -- only open needed ports
+10. **ALWAYS save panel credentials** -- show them once, clearly
+11. **ALWAYS verify connection works** before declaring success
+12. **Ask before every destructive or irreversible action**
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Connection drops after password change | Normal -- reconnect with new password |
+| Permission denied (publickey) | Check key path and permissions (700/600) |
+| Host key verification failed | `ssh-keygen -R {SERVER_IP}` then reconnect |
+| x-ui install fails | `sudo apt update && sudo apt install -y curl tar` |
+| Panel not accessible | Use SSH tunnel: `ssh -L {panel_port}:127.0.0.1:{panel_port} {nickname}` |
+| Reality not connecting | Wrong SNI -- re-run scanner, try different domain |
+| Hiddify shows error | Update Hiddify to latest version, re-add link |
+| "connection refused" | Check x-ui is running: `sudo x-ui status` |
+| Forgot panel password | `sudo x-ui setting -reset` |
+
+## x-ui CLI Reference
+
+```bash
+x-ui start          # start panel
+x-ui stop           # stop panel
+x-ui restart        # restart panel
+x-ui status         # check status
+x-ui setting -reset # reset username/password
+x-ui log            # view logs
+x-ui cert           # manage SSL certificates
+x-ui update         # update to latest version
+```
