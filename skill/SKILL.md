@@ -30,11 +30,13 @@ Complete setup: fresh VPS from provider → secured server → working VPN with 
 
 ЧАСТЬ 2: Установка VPN (3x-ui)
     → Install 3x-ui panel
+    → Enable BBR (TCP optimization)
     → Disable ICMP (stealth)
     → Reality: scanner → create inbound → get link
     → Install Hiddify client
     → Verify connection
-    → Setup SSH access from user's computer (if local mode)
+    → Generate guide file (credentials + instructions)
+    → Finalize SSH access (local mode: lockdown last)
     → ✅ VPN working
 ```
 
@@ -86,20 +88,20 @@ For **Local mode**, adapt as follows:
 
 | Step | Remote Mode (default) | Local Mode |
 |------|----------------------|------------|
-| Step 1 | Generate SSH key on LOCAL machine | **SKIP** -- do at the end (Step 22) |
+| Step 1 | Generate SSH key on LOCAL machine | **SKIP** -- user creates key on laptop later (Step 22) |
 | Step 2 | `ssh root@{SERVER_IP}` | Already on server. If not root: `sudo su -` |
 | Steps 3-4 | Run on server via root SSH | Run directly (already on server) |
-| Step 5 | Install local public key on server | **SKIP** -- do at the end (Step 22) |
+| Step 5 | Install local public key on server | **SKIP** -- user sends .pub via SCP later (Step 22) |
 | Step 6 | SSH test from LOCAL: `ssh -i ... user@IP` | Switch user: `su - {username}`, then `sudo whoami` |
-| Step 7 | Lock SSH via user session | Same -- lock SSH (affects future remote connections) |
+| Step 7 | Lock SSH via user session | **SKIP** -- keep password auth for SCP, lock at end (Step 22) |
 | Steps 8-11 | `sudo` on server via SSH | `sudo` directly (no SSH prefix) |
-| Step 12 | Write `~/.ssh/config` on LOCAL | **SKIP** -- do at the end (Step 22) |
-| Step 13 | Verify via `ssh {nickname}` | Run audit commands directly |
+| Step 12 | Write `~/.ssh/config` on LOCAL | **SKIP** -- user does this from guide file (Step 22) |
+| Step 13 | Verify via `ssh {nickname}` | Run audit directly, **skip SSH lockdown checks** |
 | Part 2 | `ssh {nickname} "sudo ..."` | `sudo ...` directly (no SSH prefix) |
 | Panel access | Via SSH tunnel | Direct: `https://127.0.0.1:{panel_port}/{web_base_path}` |
-| Step 22 | N/A (already done) | Setup SSH key access from user's computer |
+| Step 22 | Generate guide file on LOCAL | Generate guide → SCP download → SSH key setup → lock SSH |
 
-**IMPORTANT:** In both modes, the end result is the same -- user has SSH key access to the server from their local computer via `ssh {nickname}`.
+**IMPORTANT:** In both modes, the end result is the same -- user has SSH key access to the server from their local computer via `ssh {nickname}`, password auth disabled, root login disabled.
 
 ## Step 1: Generate SSH Key (LOCAL)
 
@@ -194,7 +196,9 @@ chown -R {username}:{username} /home/{username}/.ssh
 
 ## Step 7: Lock Down SSH
 
-Only after Step 6 succeeds:
+**Local Mode: SKIP this step entirely.** Password auth must stay enabled so user can download the guide file and upload their SSH public key via SCP later (Step 22). SSH lockdown happens at the very end.
+
+Only after Step 6 succeeds (Remote Mode):
 
 ```bash
 sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
@@ -295,6 +299,8 @@ sudo sysctl net.ipv4.conf.all.rp_filter
 
 Expected: root login disabled, password auth disabled, ufw active, fail2ban running, rp_filter = 1.
 
+**Local Mode:** Skip the `PermitRootLogin` and `PasswordAuthentication` checks -- they will still show default values since Step 7 was skipped. SSH lockdown happens in Step 22 after the user sets up their key.
+
 **Part 1 complete. Server is secured. Proceeding to VPN installation.**
 
 ---
@@ -341,6 +347,21 @@ ssh {nickname} "sudo x-ui status"
 If not running: `ssh {nickname} "sudo x-ui start"`
 
 **Panel port is NOT opened in firewall intentionally** -- access panel only via SSH tunnel for security.
+
+## Step 14b: Enable BBR
+
+BBR (Bottleneck Bandwidth and RTT) dramatically improves TCP throughput, especially on lossy links -- critical for VPN performance.
+
+```bash
+ssh {nickname} 'current=$(sysctl -n net.ipv4.tcp_congestion_control); echo "Current: $current"; if [ "$current" != "bbr" ]; then echo "net.core.default_qdisc=fq" | sudo tee -a /etc/sysctl.conf && echo "net.ipv4.tcp_congestion_control=bbr" | sudo tee -a /etc/sysctl.conf && sudo sysctl -p && echo "BBR enabled"; else echo "BBR already active"; fi'
+```
+
+Verify:
+```bash
+ssh {nickname} "sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc"
+```
+
+Expected: `net.ipv4.tcp_congestion_control = bbr`, `net.core.default_qdisc = fq`.
 
 ## Step 15: Disable ICMP (Stealth)
 
@@ -551,57 +572,120 @@ After user connects via Hiddify, verify:
 ssh {nickname} "sudo x-ui status && ss -tlnp | grep -E '443|{panel_port}'"
 ```
 
-## Step 22: Setup SSH Access from User's Computer (Local Mode ONLY)
+## Step 22: Generate Guide File & Finalize SSH Access
 
-**This step is ONLY for Local mode.** In Remote mode, SSH access was configured in Steps 1, 5, 12 -- skip this.
+This step generates a comprehensive guide file with all credentials and instructions, then finalizes SSH key-based access.
 
-In Local mode, Claude Code runs on the server and cannot directly execute commands on the user's local computer (laptop behind NAT, no SSH server). Offer two варианта:
+### Remote Mode
 
-ASK user:
+In Remote mode, SSH is already secured (Steps 1, 5, 7, 12). Generate the guide file on the user's LOCAL machine:
 
-```
-Теперь нужно настроить SSH-доступ с твоего компьютера к серверу.
-Есть два варианта:
+**22R: Generate guide file locally**
 
-Вариант А (простой): Я сгенерирую SSH-ключ на сервере, покажу тебе приватный ключ,
- ты скопируешь его к себе на компьютер и пропишешь SSH-конфиг (3 действия).
+Use the **Write tool** to create `~/vpn-{nickname}-guide.md` on the user's local machine. Use the **Guide File Template** below, substituting all `{variables}` with actual values.
 
-Вариант Б (автоматический): VPN уже работает — подключись через Hiddify,
- установи Claude Code на своём компьютере, и он сам всё настроит автоматически.
-```
+Tell user: **Методичка сохранена в ~/vpn-{nickname}-guide.md -- там все пароли, доступы и инструкции.**
 
-### Option A: Manual Key Copy
+### Local Mode
 
-#### A1: Generate key pair on server
+In Local mode, Claude Code runs on the server. SSH lockdown was skipped (Step 7), so password auth still works. The flow:
 
-```bash
-ssh-keygen -t ed25519 -C "{username}@{nickname}" -f /tmp/{nickname}_key -N ""
-```
+#### 22L-1: Generate guide file on server
 
-#### A2: Install public key
+Use the **Write tool** to create `/home/{username}/vpn-guide.md` on the server. Use the **Guide File Template** below, substituting all `{variables}` with actual values.
 
-```bash
-mkdir -p /home/{username}/.ssh
-cat /tmp/{nickname}_key.pub >> /home/{username}/.ssh/authorized_keys
-chmod 700 /home/{username}/.ssh
-chmod 600 /home/{username}/.ssh/authorized_keys
-chown -R {username}:{username} /home/{username}/.ssh
-```
-
-#### A3: Show private key to user
-
-```bash
-cat /tmp/{nickname}_key
-```
+#### 22L-2: User downloads guide via SCP
 
 Tell the user:
 
 ```
-Скопируй ключ выше и сохрани на своём компьютере:
+Методичка готова! Скачай её на свой компьютер.
+Открой НОВЫЙ терминал на своём ноутбуке и выполни:
 
-1. Создай файл ~/.ssh/{nickname}_key и вставь в него содержимое ключа
-2. Выполни в терминале: chmod 600 ~/.ssh/{nickname}_key
-3. Добавь в файл ~/.ssh/config:
+scp {username}@{SERVER_IP}:~/vpn-guide.md ./
+
+Пароль: {sudo_password}
+
+Файл сохранится в текущую папку. Открой его -- там все пароли и инструкции.
+```
+
+**Fallback:** If SCP doesn't work (Windows without OpenSSH, network issues), show the full guide content directly in chat.
+
+#### 22L-3: User creates SSH key on their laptop
+
+Tell the user:
+
+```
+Теперь создай SSH-ключ на своём компьютере.
+Есть два варианта:
+
+Вариант А: Следуй инструкциям из раздела "SSH Key Setup" в методичке.
+
+Вариант Б (автоматический): Установи Claude Code на ноутбуке
+  (https://claude.ai/download) и скинь ему файл vpn-guide.md --
+  он сам всё настроит по инструкциям из раздела "Instructions for Claude Code".
+
+После создания ключа отправь публичный ключ на сервер (следующий шаг).
+```
+
+#### 22L-4: User sends public key to server via SCP
+
+Tell the user:
+
+```
+Отправь публичный ключ на сервер (из терминала на ноутбуке):
+
+scp ~/.ssh/{nickname}_key.pub {username}@{SERVER_IP}:~/
+
+Пароль: {sudo_password}
+```
+
+Wait for user confirmation before proceeding.
+
+#### 22L-5: Install key + verify
+
+```bash
+mkdir -p /home/{username}/.ssh
+cat /home/{username}/{nickname}_key.pub >> /home/{username}/.ssh/authorized_keys
+chmod 700 /home/{username}/.ssh
+chmod 600 /home/{username}/.ssh/authorized_keys
+chown -R {username}:{username} /home/{username}/.ssh
+rm -f /home/{username}/{nickname}_key.pub
+```
+
+Tell user to test from their laptop:
+```
+Проверь подключение с ноутбука:
+ssh -i ~/.ssh/{nickname}_key {username}@{SERVER_IP}
+
+Должно подключиться без пароля.
+```
+
+**Wait for user confirmation that SSH key works before proceeding!**
+
+#### 22L-6: Lock down SSH
+
+**Only after user confirms key-based login works:**
+
+```bash
+sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sudo systemctl restart sshd
+```
+
+Verify:
+```bash
+grep -E "PermitRootLogin|PasswordAuthentication" /etc/ssh/sshd_config
+```
+
+Expected: `PermitRootLogin no`, `PasswordAuthentication no`.
+
+#### 22L-7: User configures SSH config
+
+Tell the user:
+
+```
+Последний шаг! Добавь на ноутбуке в файл ~/.ssh/config:
 
 Host {nickname}
     HostName {SERVER_IP}
@@ -609,32 +693,195 @@ Host {nickname}
     IdentityFile ~/.ssh/{nickname}_key
     IdentitiesOnly yes
 
-Проверь: ssh {nickname}
+Теперь подключайся просто: ssh {nickname}
 ```
 
-#### A4: Delete private key from server
-
-**IMPORTANT:** Private key must NOT remain on the server.
+#### 22L-8: Delete guide file from server
 
 ```bash
-rm -f /tmp/{nickname}_key /tmp/{nickname}_key.pub
+rm -f /home/{username}/vpn-guide.md
 ```
 
-### Option B: Via Claude Code on Local Machine
+Tell user: **Методичка удалена с сервера. Убедись, что она сохранена на твоём компьютере.**
 
-Tell the user:
+---
 
+### Guide File Template
+
+Generate this file using the **Write tool**, substituting all `{variables}` with actual values collected during setup.
+
+~~~markdown
+# VPN Server Guide — {nickname}
+
+Generated: {current_date}
+
+## 1. Server Connection
+
+| Field | Value |
+|-------|-------|
+| IP | `{SERVER_IP}` |
+| Username | `{username}` |
+| Sudo password | `{sudo_password}` |
+| SSH key | `~/.ssh/{nickname}_key` |
+| Quick connect | `ssh {nickname}` |
+
+## 2. 3x-ui Panel
+
+| Field | Value |
+|-------|-------|
+| URL | `https://127.0.0.1:{panel_port}/{web_base_path}` |
+| Login | `{panel_username}` |
+| Password | `{panel_password}` |
+
+Access via SSH tunnel:
 ```
-1. Подключись к VPN через Hiddify (ссылка уже добавлена)
-2. Установи Claude Code на своём компьютере: https://claude.ai/download
-3. Запусти Claude Code и скажи ему:
-
-   "Настрой мне SSH-доступ к серверу {SERVER_IP},
-    пользователь {username}, nickname {nickname}"
-
-Claude Code на твоём компьютере сам создаст ключ, отправит его на сервер
-и пропишет SSH-конфиг. Всё автоматически.
+ssh -L {panel_port}:127.0.0.1:{panel_port} {nickname}
 ```
+Then open: `https://127.0.0.1:{panel_port}/{web_base_path}`
+
+## 3. VPN Connection
+
+| Field | Value |
+|-------|-------|
+| Protocol | VLESS Reality |
+| Port | 443 |
+| SNI | `{best_sni}` |
+| Client | Hiddify |
+
+VLESS link:
+```
+{VLESS_LINK}
+```
+
+## 4. SSH Key Setup
+
+If you don't have an SSH key yet, follow the instructions for your OS:
+
+### macOS / Linux
+
+```bash
+# Generate key
+ssh-keygen -t ed25519 -C "{username}@{nickname}" -f ~/.ssh/{nickname}_key -N ""
+
+# Send public key to server
+scp ~/.ssh/{nickname}_key.pub {username}@{SERVER_IP}:~/
+
+# Set permissions
+chmod 600 ~/.ssh/{nickname}_key
+
+# Add to SSH config
+cat >> ~/.ssh/config << 'SSHEOF'
+
+Host {nickname}
+    HostName {SERVER_IP}
+    User {username}
+    IdentityFile ~/.ssh/{nickname}_key
+    IdentitiesOnly yes
+SSHEOF
+
+# Test connection
+ssh {nickname}
+```
+
+### Windows (PowerShell)
+
+```powershell
+# Generate key
+ssh-keygen -t ed25519 -C "{username}@{nickname}" -f $HOME\.ssh\{nickname}_key -N '""'
+
+# Send public key to server
+scp $HOME\.ssh\{nickname}_key.pub {username}@{SERVER_IP}:~/
+
+# Add to SSH config
+Add-Content $HOME\.ssh\config @"
+
+Host {nickname}
+    HostName {SERVER_IP}
+    User {username}
+    IdentityFile ~/.ssh/{nickname}_key
+    IdentitiesOnly yes
+"@
+
+# Test connection
+ssh {nickname}
+```
+
+Note: `chmod` is not needed on Windows. SSH uses ACLs automatically.
+
+## 5. Common Operations
+
+```bash
+ssh {nickname}                           # connect to server
+ssh {nickname} "sudo x-ui status"        # panel status
+ssh {nickname} "sudo x-ui restart"       # restart panel
+ssh {nickname} "sudo x-ui log"           # view logs
+ssh {nickname} "sudo x-ui setting -reset" # reset panel password
+```
+
+Add new VPN client:
+Open panel via SSH tunnel → Inbounds → ... → Add Client → share link/QR.
+
+## 6. Security Status
+
+| Feature | Status |
+|---------|--------|
+| Root login | Disabled |
+| Password auth | Disabled |
+| UFW firewall | Enabled (SSH, 80, 443) |
+| fail2ban | Enabled (3 attempts → 24h ban) |
+| Kernel hardening | Enabled (sysctl) |
+| BBR | Enabled |
+| ICMP (ping) | Disabled |
+
+## 7. Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Connection refused | `ssh {nickname} "sudo x-ui status"` — restart if stopped |
+| Permission denied (publickey) | Check key path and permissions: `ls -la ~/.ssh/{nickname}_key` |
+| Host key verification failed | `ssh-keygen -R {SERVER_IP}` then reconnect |
+| Panel not accessible | Use SSH tunnel (see section 2) |
+| VPN not connecting | Wrong SNI or server down — check `sudo x-ui log` |
+| Forgot panel password | `ssh {nickname} "sudo x-ui setting -reset"` |
+
+## 8. Instructions for Claude Code
+
+This section is for automated setup by Claude Code running on your local computer.
+Copy everything below and paste it to Claude Code on your laptop.
+
+---
+
+**TASK: Set up SSH key access to VPN server**
+
+Server data:
+- SERVER_IP: {SERVER_IP}
+- USERNAME: {username}
+- PASSWORD: {sudo_password}
+- NICKNAME: {nickname}
+
+Steps:
+1. Generate SSH key: `ssh-keygen -t ed25519 -C "{username}@{nickname}" -f ~/.ssh/{nickname}_key -N ""`
+2. Send public key to server: `scp ~/.ssh/{nickname}_key.pub {username}@{SERVER_IP}:~/`
+   (use password above when prompted)
+3. SSH to server and install the key:
+   ```
+   ssh {username}@{SERVER_IP} 'mkdir -p ~/.ssh && cat ~/{nickname}_key.pub >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && rm ~/{nickname}_key.pub'
+   ```
+4. Test key-based login: `ssh -i ~/.ssh/{nickname}_key {username}@{SERVER_IP}` (should work without password)
+5. Add SSH config:
+   ```
+   cat >> ~/.ssh/config << 'EOF'
+
+   Host {nickname}
+       HostName {SERVER_IP}
+       User {username}
+       IdentityFile ~/.ssh/{nickname}_key
+       IdentitiesOnly yes
+   EOF
+   ```
+6. Verify: `ssh {nickname}` (should connect without password)
+7. Tell the user: "SSH key configured. Connect with: ssh {nickname}"
+~~~
 
 ---
 
@@ -658,6 +905,7 @@ VPN-сервер полностью настроен и работает!
    Файрвол включён (порты: SSH, 80, 443)
    fail2ban защищает от брутфорса
    Ядро усилено (sysctl)
+   BBR включён (TCP-оптимизация)
    ICMP отключён (сервер не пингуется)
 
 Панель 3x-ui:
@@ -686,6 +934,9 @@ SSH-туннель к админке:
 Добавить нового клиента:
    Открой админку -> Inbounds -> ... -> Add Client
    Скинь ссылку или QR-код другому человеку
+
+Методичка: ~/vpn-{nickname}-guide.md
+   Все пароли, инструкции и команды в одном файле
 ```
 
 ## Critical Rules
@@ -705,6 +956,10 @@ SSH-туннель к админке:
 10. **ALWAYS save panel credentials** -- show them once, clearly
 11. **ALWAYS verify connection works** before declaring success
 12. **Ask before every destructive or irreversible action**
+13. **ALWAYS generate guide file** (Step 22) -- the user's single source of truth
+14. **Local Mode: do NOT lock SSH in Step 7** -- keep password auth until Step 22
+15. **Local Mode: lock SSH LAST** (Step 22L-6) -- only after user confirms key works
+16. **NEVER leave password auth enabled** after setup is complete
 
 ## Troubleshooting
 
@@ -719,6 +974,9 @@ SSH-туннель к админке:
 | Hiddify shows error | Update Hiddify to latest version, re-add link |
 | "connection refused" | Check x-ui is running: `sudo x-ui status` |
 | Forgot panel password | `sudo x-ui setting -reset` |
+| SCP fails (Windows) | Install OpenSSH: Settings → Apps → Optional Features → OpenSSH Client |
+| SCP fails (connection refused) | Check UFW allows SSH: `sudo ufw status`, verify sshd running |
+| BBR not active after reboot | Re-check: `sysctl net.ipv4.tcp_congestion_control` -- re-apply if needed |
 
 ## x-ui CLI Reference
 
