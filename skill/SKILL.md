@@ -98,6 +98,7 @@ For **Local mode**, adapt as follows:
 | Step 12 | Write `~/.ssh/config` on LOCAL | **SKIP** -- user does this from guide file (Step 22) |
 | Step 13 | Verify via `ssh {nickname}` | Run audit directly, **skip SSH lockdown checks** |
 | Part 2 | `ssh {nickname} "sudo ..."` | `sudo ...` directly (no SSH prefix) |
+| Step 17A | Scanner via `ssh {nickname} '...'` | Scanner runs directly (no SSH wrapper) -- see Step 17A for both commands |
 | Panel access | Via SSH tunnel | Direct: `https://127.0.0.1:{panel_port}/{web_base_path}` |
 | Step 22 | Generate guide file on LOCAL | Generate guide → SCP download → SSH key setup → lock SSH |
 
@@ -390,19 +391,57 @@ Go to `references/vless-tls.md`.
 
 ## Step 17A: Find Best SNI with Reality Scanner
 
-Download and run Reality Scanner to find optimal SNI/Target for the server's network:
+Scan the server's **/24 subnet** to find real websites on neighboring IPs. This is critical: SNI must belong to a server in the same subnet as the VPS, otherwise active probing by DPI will detect the mismatch.
 
+**Why subnet scanning matters:**
+- DPI sees the SNI in TLS ClientHello and can probe the IP to verify the domain actually lives there
+- Popular domains (microsoft.com, google.com) are often on CDN IPs far from the VPS -- active probing catches this
+- A small unknown site on a neighboring IP (e.g., `shop.finn-auto.fi`) is ideal -- nobody filters it, and it's in the same subnet
+
+Download and run Reality Scanner against the /24 subnet:
+
+**Remote mode** (Claude Code on user's laptop):
 ```bash
-ssh {nickname} 'ARCH=$(dpkg --print-architecture); case "$ARCH" in amd64) SA="64";; arm64|aarch64) SA="arm64-v8a";; *) SA="$ARCH";; esac && curl -sL "https://github.com/XTLS/RealiTLScanner/releases/latest/download/RealiTLScanner-linux-${SA}" -o /tmp/scanner && chmod +x /tmp/scanner && file /tmp/scanner | grep -q ELF && timeout 30 /tmp/scanner --addr $(curl -4 -s ifconfig.me) 2>&1 | head -30 || echo "ERROR: scanner binary not valid for this architecture"'
+ssh {nickname} 'ARCH=$(dpkg --print-architecture); case "$ARCH" in amd64) SA="64";; arm64|aarch64) SA="arm64-v8a";; *) SA="$ARCH";; esac && curl -sL "https://github.com/XTLS/RealiTLScanner/releases/latest/download/RealiTLScanner-linux-${SA}" -o /tmp/scanner && chmod +x /tmp/scanner && file /tmp/scanner | grep -q ELF || { echo "ERROR: scanner binary not valid for this architecture"; exit 1; }; MY_IP=$(curl -4 -s ifconfig.me); SUBNET=$(echo $MY_IP | sed "s/\.[0-9]*$/.0\/24/"); echo "Scanning subnet: $SUBNET"; timeout 120 /tmp/scanner --addr "$SUBNET" 2>&1 | head -80'
 ```
 
-**Note:** GitHub releases use non-standard arch names (`64` instead of `amd64`, `arm64-v8a` instead of `arm64`). The `case` block maps them. The `file | grep ELF` check ensures the download is a real binary, not a 404 HTML page.
+**Local mode** (Claude Code on the VPS itself):
+```bash
+ARCH=$(dpkg --print-architecture); case "$ARCH" in amd64) SA="64";; arm64|aarch64) SA="arm64-v8a";; *) SA="$ARCH";; esac && curl -sL "https://github.com/XTLS/RealiTLScanner/releases/latest/download/RealiTLScanner-linux-${SA}" -o /tmp/scanner && chmod +x /tmp/scanner && file /tmp/scanner | grep -q ELF || { echo "ERROR: scanner binary not valid for this architecture"; exit 1; }; MY_IP=$(curl -4 -s ifconfig.me); SUBNET=$(echo $MY_IP | sed "s/\.[0-9]*$/.0\/24/"); echo "Scanning subnet: $SUBNET"; timeout 120 /tmp/scanner --addr "$SUBNET" 2>&1 | head -80
+```
 
-Look for well-known domains (github.com, microsoft.com, twitch.tv, etc.) in the output.
+**Note:** The commands are identical — Local mode simply runs without the `ssh {nickname}` wrapper since Claude Code is already on the VPS. GitHub releases use non-standard arch names (`64` instead of `amd64`, `arm64-v8a` instead of `arm64`). The `case` block maps them. The `file | grep ELF` check ensures the download is a real binary, not a 404 HTML page. Timeout is 120s because scanning 254 IPs takes longer than a single IP.
 
-**If scanner finds nothing or times out** -- use a reliable fallback SNI: `yahoo.com`, `www.microsoft.com`, or `www.google.com`. Some hosting providers (e.g., OVH) have subnets where the scanner finds no nearby TLS servers -- this is normal, fallback SNI will work.
+### Choosing the best SNI from scan results
 
-Save the best SNI (e.g., `github.com`) for the next step.
+From the scanner output, **prefer** domains in this order:
+
+1. **Small unknown sites on neighboring IPs** (e.g., `shop.finn-auto.fi`, `portal.company.de`) -- ideal, not filtered by DPI
+2. **Regional/niche services** (e.g., local hosting panels, small business sites) -- low profile
+3. **Well-known tech sites** (e.g., `github.com`, `twitch.tv`) -- acceptable but less ideal
+
+**AVOID** these as SNI:
+- `www.google.com`, `www.microsoft.com`, `googletagmanager.com` -- commonly blacklisted by DPI, people in Amnezia chats report these stop working
+- Any domain behind a CDN (Cloudflare, Akamai, Fastly) -- the IP won't match the CDN edge, active probing detects this
+- Domains that resolve to a completely different IP range than the VPS
+
+**How to verify a candidate SNI:** The scanner output shows which IP responded with which domain. Pick a domain where the responding IP is in the same /24 as the VPS.
+
+**If scanner finds nothing or times out** -- some providers (e.g., OVH) have sparse subnets. Try scanning a wider range `/23` (512 IPs):
+
+**Remote mode:**
+```bash
+ssh {nickname} 'MY_IP=$(curl -4 -s ifconfig.me); SUBNET=$(echo $MY_IP | sed "s/\.[0-9]*$/.0\/23/"); timeout 180 /tmp/scanner --addr "$SUBNET" 2>&1 | head -80'
+```
+
+**Local mode:**
+```bash
+MY_IP=$(curl -4 -s ifconfig.me); SUBNET=$(echo $MY_IP | sed "s/\.[0-9]*$/.0\/23/"); timeout 180 /tmp/scanner --addr "$SUBNET" 2>&1 | head -80
+```
+
+If still nothing, use `www.yahoo.com` as a last-resort fallback -- it resolves to many IPs globally and is less commonly filtered than google/microsoft. But **always prefer a real neighbor from the scan**.
+
+Save the best SNI for the next step.
 
 ## Step 18A: Create VLESS Reality Inbound via API
 
