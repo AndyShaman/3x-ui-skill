@@ -391,12 +391,15 @@ Go to `references/vless-tls.md`.
 
 ## Step 17A: Find Best SNI with Reality Scanner
 
-Scan the server's **/24 subnet** to find real websites on neighboring IPs. This is critical: SNI must belong to a server in the same subnet as the VPS, otherwise active probing by DPI will detect the mismatch.
+Scan the server's **/24 subnet** to find real websites on neighboring IPs that support **TLS 1.3, H2 (HTTP/2), and X25519** -- the exact stack Reality needs to mimic a genuine TLS handshake. The found domain becomes the masquerade target (SNI/dest), making VPN traffic indistinguishable from regular HTTPS to a neighboring site on the same hosting.
 
 **Why subnet scanning matters:**
+- Reality reproduces a real TLS 1.3 handshake with the dest server -- the dest **must** support TLS 1.3 + H2 + X25519, or Reality won't work
+- RealiTLScanner (from the XTLS project) checks exactly this -- it only outputs servers compatible with Reality
 - DPI sees the SNI in TLS ClientHello and can probe the IP to verify the domain actually lives there
 - Popular domains (microsoft.com, google.com) are often on CDN IPs far from the VPS -- active probing catches this
 - A small unknown site on a neighboring IP (e.g., `shop.finn-auto.fi`) is ideal -- nobody filters it, and it's in the same subnet
+- **Do NOT manually pick an SNI** without the scanner -- a random domain may not support TLS 1.3 or may be on a different IP range
 
 Download and run Reality Scanner against the /24 subnet:
 
@@ -414,7 +417,7 @@ ARCH=$(dpkg --print-architecture); case "$ARCH" in amd64) SA="64";; arm64|aarch6
 
 ### Choosing the best SNI from scan results
 
-From the scanner output, **prefer** domains in this order:
+Every domain in the scanner output already supports TLS 1.3 + H2 + X25519 (the scanner filters for this). From those results, **prefer** domains in this order:
 
 1. **Small unknown sites on neighboring IPs** (e.g., `shop.finn-auto.fi`, `portal.company.de`) -- ideal, not filtered by DPI
 2. **Regional/niche services** (e.g., local hosting panels, small business sites) -- low profile
@@ -439,7 +442,7 @@ ssh {nickname} 'MY_IP=$(curl -4 -s ifconfig.me); SUBNET=$(echo $MY_IP | sed "s/\
 MY_IP=$(curl -4 -s ifconfig.me); SUBNET=$(echo $MY_IP | sed "s/\.[0-9]*$/.0\/23/"); timeout 180 /tmp/scanner --addr "$SUBNET" 2>&1 | head -80
 ```
 
-If still nothing, use `www.yahoo.com` as a last-resort fallback -- it resolves to many IPs globally and is less commonly filtered than google/microsoft. But **always prefer a real neighbor from the scan**.
+If still nothing, use `www.yahoo.com` as a last-resort fallback -- it supports TLS 1.3 and resolves to many IPs globally, and is less commonly filtered than google/microsoft. But **always prefer a real neighbor from the scan** -- a neighbor is guaranteed to be in the same subnet and verified by the scanner for TLS 1.3 + H2 + X25519 compatibility.
 
 Save the best SNI for the next step.
 
