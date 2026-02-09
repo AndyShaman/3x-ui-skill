@@ -20,9 +20,7 @@ Complete setup: fresh VPS from provider → secured server → working VPN with 
     → Create non-root user + sudo
     → Install SSH key
     → TEST new user login (critical!)
-    → Disable root + password auth
     → Firewall (ufw)
-    → fail2ban
     → Kernel hardening
     → Time sync + packages
     → Configure local ~/.ssh/config
@@ -36,7 +34,7 @@ Complete setup: fresh VPS from provider → secured server → working VPN with 
     → Install Hiddify client
     → Verify connection
     → Generate guide file (credentials + instructions)
-    → Finalize SSH access (local mode: lockdown last)
+    → Install fail2ban + lock SSH (after key verified)
     → ✅ VPN working
 ```
 
@@ -93,14 +91,14 @@ For **Local mode**, adapt as follows:
 | Steps 3-4 | Run on server via root SSH | Run directly (already on server) |
 | Step 5 | Install local public key on server | **SKIP** -- user sends .pub via SCP later (Step 22) |
 | Step 6 | SSH test from LOCAL: `ssh -i ... user@IP` | Switch user: `su - {username}`, then `sudo whoami` |
-| Step 7 | Lock SSH via user session | **SKIP** -- keep password auth for SCP, lock at end (Step 22) |
+| Step 7 | **SKIP** -- lockdown deferred to Step 22 | **SKIP** -- lockdown deferred to Step 22 |
 | Steps 8-11 | `sudo` on server via SSH | `sudo` directly (no SSH prefix) |
 | Step 12 | Write `~/.ssh/config` on LOCAL | **SKIP** -- user does this from guide file (Step 22) |
 | Step 13 | Verify via `ssh {nickname}` | Run audit directly, **skip SSH lockdown checks** |
 | Part 2 | `ssh {nickname} "sudo ..."` | `sudo ...` directly (no SSH prefix) |
 | Step 17A | Scanner via `ssh {nickname} '...'` | Scanner runs directly (no SSH wrapper) -- see Step 17A for both commands |
 | Panel access | Via SSH tunnel | Direct: `https://127.0.0.1:{panel_port}/{web_base_path}` |
-| Step 22 | Generate guide file on LOCAL | Generate guide → SCP download → SSH key setup → lock SSH |
+| Step 22 | Generate guide + fail2ban + lock SSH | Generate guide → SCP download → SSH key setup → fail2ban + lock SSH |
 
 **IMPORTANT:** In both modes, the end result is the same -- user has SSH key access to the server from their local computer via `ssh {nickname}`, password auth disabled, root login disabled.
 
@@ -195,17 +193,9 @@ cat /home/{username}/.ssh/authorized_keys
 chown -R {username}:{username} /home/{username}/.ssh
 ```
 
-## Step 7: Lock Down SSH
+## Step 7: Lock Down SSH — DEFERRED
 
-**Local Mode: SKIP this step entirely.** Password auth must stay enabled so user can download the guide file and upload their SSH public key via SCP later (Step 22). SSH lockdown happens at the very end.
-
-Only after Step 6 succeeds (Remote Mode):
-
-```bash
-sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sudo systemctl restart sshd
-```
+**Оба режима: ПРОПУСКАЕМ.** Блокировка SSH и установка fail2ban выполняются в самом конце (Step 22), после того как SSH-ключ проверен. Это предотвращает случайную блокировку доступа во время настройки.
 
 ## Step 8: Firewall
 
@@ -220,27 +210,9 @@ sudo ufw --force enable
 sudo ufw status
 ```
 
-## Step 9: fail2ban
+## Step 9: fail2ban — DEFERRED
 
-```bash
-sudo apt install -y fail2ban
-sudo tee /etc/fail2ban/jail.local << 'EOF'
-[DEFAULT]
-bantime = 1h
-findtime = 10m
-maxretry = 5
-
-[sshd]
-enabled = true
-port = ssh
-filter = sshd
-logpath = /var/log/auth.log
-maxretry = 3
-bantime = 24h
-EOF
-sudo systemctl enable fail2ban
-sudo systemctl restart fail2ban
-```
+**Пропущен.** fail2ban устанавливается в конце настройки (Step 22) вместе с блокировкой SSH, чтобы не заблокировать пользователя во время настройки.
 
 ## Step 10: Kernel Hardening
 
@@ -292,17 +264,15 @@ Connect as new user and run quick audit:
 ```bash
 ssh {nickname}
 # Then on server:
-grep -E "PermitRootLogin|PasswordAuthentication" /etc/ssh/sshd_config
 sudo ufw status
-sudo systemctl status fail2ban --no-pager
 sudo sysctl net.ipv4.conf.all.rp_filter
 ```
 
-Expected: root login disabled, password auth disabled, ufw active, fail2ban running, rp_filter = 1.
+Expected: ufw active, rp_filter = 1.
 
-**Local Mode:** Skip the `PermitRootLogin` and `PasswordAuthentication` checks -- they will still show default values since Step 7 was skipped. SSH lockdown happens in Step 22 after the user sets up their key.
+**Note:** SSH lockdown и fail2ban проверяются в конце (Step 22) после подтверждения работы SSH-ключа.
 
-**Part 1 complete. Server is secured. Proceeding to VPN installation.**
+**Часть 1 завершена. Базовая настройка сервера готова. Переходим к установке VPN.**
 
 ---
 
@@ -620,13 +590,46 @@ This step generates a comprehensive guide file with all credentials and instruct
 
 ### Remote Mode
 
-In Remote mode, SSH is already secured (Steps 1, 5, 7, 12). Generate the guide file on the user's LOCAL machine:
-
-**22R: Generate guide file locally**
+**22R-1: Generate guide file locally**
 
 Use the **Write tool** to create `~/vpn-{nickname}-guide.md` on the user's local machine. Use the **Guide File Template** below, substituting all `{variables}` with actual values.
 
-Tell user: **Методичка сохранена в ~/vpn-{nickname}-guide.md -- там все пароли, доступы и инструкции.**
+Tell user: **Методичка сохранена в ~/vpn-{nickname}-guide.md — там все пароли, доступы и инструкции.**
+
+**22R-2: Final lockdown — fail2ban + SSH**
+
+Verify SSH key access works:
+```bash
+ssh {nickname} "echo 'SSH key access OK'"
+```
+
+If successful, install fail2ban and lock SSH:
+```bash
+ssh {nickname} 'sudo apt install -y fail2ban && sudo tee /etc/fail2ban/jail.local << JAILEOF
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 24h
+JAILEOF
+sudo systemctl enable fail2ban && sudo systemctl restart fail2ban'
+```
+
+```bash
+ssh {nickname} 'sudo sed -i "s/^#\?PermitRootLogin.*/PermitRootLogin no/" /etc/ssh/sshd_config && sudo sed -i "s/^#\?PasswordAuthentication.*/PasswordAuthentication no/" /etc/ssh/sshd_config && sudo systemctl restart sshd'
+```
+
+**Verify lockdown + SSH still works:**
+```bash
+ssh {nickname} "grep -E 'PermitRootLogin|PasswordAuthentication' /etc/ssh/sshd_config && sudo systemctl status fail2ban --no-pager -l && echo 'Lockdown OK'"
+```
 
 ### Local Mode
 
@@ -705,10 +708,32 @@ ssh -i ~/.ssh/{nickname}_key {username}@{SERVER_IP}
 
 **Wait for user confirmation that SSH key works before proceeding!**
 
-#### 22L-6: Lock down SSH
+#### 22L-6: Final lockdown — fail2ban + SSH
 
-**Only after user confirms key-based login works:**
+**Only after user confirms key-based login works!**
 
+Install fail2ban:
+```bash
+sudo apt install -y fail2ban
+sudo tee /etc/fail2ban/jail.local << 'EOF'
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 24h
+EOF
+sudo systemctl enable fail2ban
+sudo systemctl restart fail2ban
+```
+
+Lock SSH:
 ```bash
 sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
@@ -718,9 +743,17 @@ sudo systemctl restart sshd
 Verify:
 ```bash
 grep -E "PermitRootLogin|PasswordAuthentication" /etc/ssh/sshd_config
+sudo systemctl status fail2ban --no-pager
 ```
 
-Expected: `PermitRootLogin no`, `PasswordAuthentication no`.
+Expected: `PermitRootLogin no`, `PasswordAuthentication no`, fail2ban active.
+
+Tell user to verify SSH still works from laptop:
+```
+Проверь, что SSH-ключ всё ещё работает:
+ssh {nickname}
+Если подключился — всё настроено!
+```
 
 #### 22L-7: User configures SSH config
 
@@ -753,65 +786,65 @@ Tell user: **Методичка удалена с сервера. Убедись
 Generate this file using the **Write tool**, substituting all `{variables}` with actual values collected during setup.
 
 ~~~markdown
-# VPN Server Guide — {nickname}
+# Методичка VPN-сервера — {nickname}
 
-Generated: {current_date}
+Дата создания: {current_date}
 
-## 1. Server Connection
+## 1. Подключение к серверу
 
-| Field | Value |
-|-------|-------|
+| Параметр | Значение |
+|----------|----------|
 | IP | `{SERVER_IP}` |
-| Username | `{username}` |
-| Sudo password | `{sudo_password}` |
-| SSH key | `~/.ssh/{nickname}_key` |
-| Quick connect | `ssh {nickname}` |
+| Пользователь | `{username}` |
+| Пароль sudo | `{sudo_password}` |
+| SSH-ключ | `~/.ssh/{nickname}_key` |
+| Быстрое подключение | `ssh {nickname}` |
 
-## 2. 3x-ui Panel
+## 2. Панель 3x-ui
 
-| Field | Value |
-|-------|-------|
+| Параметр | Значение |
+|----------|----------|
 | URL | `https://127.0.0.1:{panel_port}/{web_base_path}` |
-| Login | `{panel_username}` |
-| Password | `{panel_password}` |
+| Логин | `{panel_username}` |
+| Пароль | `{panel_password}` |
 
-Access via SSH tunnel:
+Доступ через SSH-туннель:
 ```
 ssh -L {panel_port}:127.0.0.1:{panel_port} {nickname}
 ```
-Then open: `https://127.0.0.1:{panel_port}/{web_base_path}`
+Затем открой: `https://127.0.0.1:{panel_port}/{web_base_path}`
 
-## 3. VPN Connection
+## 3. VPN-подключение
 
-| Field | Value |
-|-------|-------|
-| Protocol | VLESS Reality |
-| Port | 443 |
+| Параметр | Значение |
+|----------|----------|
+| Протокол | VLESS Reality |
+| Порт | 443 |
 | SNI | `{best_sni}` |
-| Client | Hiddify |
+| Клиент | Hiddify |
 
-VLESS link:
+Ссылка VLESS:
 ```
 {VLESS_LINK}
 ```
 
-## 4. SSH Key Setup
+## 4. Настройка SSH-ключа
 
-If you don't have an SSH key yet, follow the instructions for your OS:
+Если у тебя ещё нет SSH-ключа, следуй инструкциям для своей ОС:
 
 ### macOS / Linux
 
 ```bash
-# Generate key
+# Создать ключ
 ssh-keygen -t ed25519 -C "{username}@{nickname}" -f ~/.ssh/{nickname}_key -N ""
 
-# Send public key to server
+# Отправить публичный ключ на сервер
 scp ~/.ssh/{nickname}_key.pub {username}@{SERVER_IP}:~/
 
-# Set permissions
+# Установить права
 chmod 600 ~/.ssh/{nickname}_key
 
-# Add to SSH config
+# Добавить в SSH-конфиг
 cat >> ~/.ssh/config << 'SSHEOF'
 
 Host {nickname}
@@ -821,20 +854,20 @@ Host {nickname}
     IdentitiesOnly yes
 SSHEOF
 
-# Test connection
+# Проверить подключение
 ssh {nickname}
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-# Generate key
+# Создать ключ
 ssh-keygen -t ed25519 -C "{username}@{nickname}" -f $HOME\.ssh\{nickname}_key -N '""'
 
-# Send public key to server
+# Отправить публичный ключ на сервер
 scp $HOME\.ssh\{nickname}_key.pub {username}@{SERVER_IP}:~/
 
-# Add to SSH config
+# Добавить в SSH-конфиг
 Add-Content $HOME\.ssh\config @"
 
 Host {nickname}
@@ -844,73 +877,81 @@ Host {nickname}
     IdentitiesOnly yes
 "@
 
-# Test connection
+# Проверить подключение
 ssh {nickname}
 ```
 
-Note: `chmod` is not needed on Windows. SSH uses ACLs automatically.
+Примечание: `chmod` не нужен на Windows. SSH использует ACL автоматически.
 
-## 5. Common Operations
+## 5. Частые команды
 
 ```bash
-ssh {nickname}                           # connect to server
-ssh {nickname} "sudo x-ui status"        # panel status
-ssh {nickname} "sudo x-ui restart"       # restart panel
-ssh {nickname} "sudo x-ui log"           # view logs
-ssh {nickname} "sudo x-ui setting -reset" # reset panel password
+ssh {nickname}                           # подключиться к серверу
+ssh {nickname} "sudo x-ui status"        # статус панели
+ssh {nickname} "sudo x-ui restart"       # перезапустить панель
+ssh {nickname} "sudo x-ui log"           # логи
+ssh {nickname} "sudo x-ui setting -reset" # сбросить пароль панели
 ```
 
-Add new VPN client:
-Open panel via SSH tunnel → Inbounds → ... → Add Client → share link/QR.
+Добавить нового VPN-клиента:
+Открой панель через SSH-туннель → Inbounds → ... → Add Client → отправь ссылку/QR.
 
-## 6. Security Status
+## 6. Статус безопасности
 
-| Feature | Status |
-|---------|--------|
-| Root login | Disabled |
-| Password auth | Disabled |
-| UFW firewall | Enabled (SSH, 80, 443) |
-| fail2ban | Enabled (3 attempts → 24h ban) |
-| Kernel hardening | Enabled (sysctl) |
-| BBR | Enabled |
-| ICMP (ping) | Disabled |
+| Параметр | Статус |
+|----------|--------|
+| Вход под root | Отключён |
+| Вход по паролю | Отключён |
+| Файрвол UFW | Включён (SSH, 80, 443) |
+| fail2ban | Включён (3 попытки → бан 24ч) |
+| Усиление ядра | Включено (sysctl) |
+| BBR | Включён |
+| ICMP (ping) | Отключён |
 
-## 7. Troubleshooting
+## 7. Решение проблем
 
-| Problem | Solution |
-|---------|----------|
-| Connection refused | `ssh {nickname} "sudo x-ui status"` — restart if stopped |
-| Permission denied (publickey) | Check key path and permissions: `ls -la ~/.ssh/{nickname}_key` |
-| Host key verification failed | `ssh-keygen -R {SERVER_IP}` then reconnect |
-| Panel not accessible | Use SSH tunnel (see section 2) |
-| VPN not connecting | Wrong SNI or server down — check `sudo x-ui log` |
-| Forgot panel password | `ssh {nickname} "sudo x-ui setting -reset"` |
+| Проблема | Решение |
+|----------|---------|
+| Connection refused | `ssh {nickname} "sudo x-ui status"` — перезапусти если остановлен |
+| Permission denied (publickey) | Проверь путь и права ключа: `ls -la ~/.ssh/{nickname}_key` |
+| Host key verification failed | `ssh-keygen -R {SERVER_IP}` и переподключись |
+| Панель недоступна | Используй SSH-туннель (см. раздел 2) |
+| VPN не подключается | Неверный SNI или сервер лежит — проверь `sudo x-ui log` |
+| Забыл пароль панели | `ssh {nickname} "sudo x-ui setting -reset"` |
 
-## 8. Instructions for Claude Code
+## 8. Инструкции для Claude Code
 
-This section is for automated setup by Claude Code running on your local computer.
-Copy everything below and paste it to Claude Code on your laptop.
+Этот раздел для автоматической настройки через Claude Code на твоём ноутбуке.
+Скопируй всё ниже и вставь в Claude Code на ноутбуке.
 
 ---
 
-**TASK: Set up SSH key access to VPN server**
+**ЗАДАЧА: Настроить SSH-ключ и завершить настройку безопасности VPN-сервера**
 
-Server data:
+Данные сервера:
 - SERVER_IP: {SERVER_IP}
 - USERNAME: {username}
 - PASSWORD: {sudo_password}
 - NICKNAME: {nickname}
 
-Steps:
-1. Generate SSH key: `ssh-keygen -t ed25519 -C "{username}@{nickname}" -f ~/.ssh/{nickname}_key -N ""`
-2. Send public key to server: `scp ~/.ssh/{nickname}_key.pub {username}@{SERVER_IP}:~/`
-   (use password above when prompted)
-3. SSH to server and install the key:
+Шаги:
+
+**Часть А: Установка sshpass (нужен для автоматической передачи пароля)**
+1. Определи ОС и установи sshpass:
+   - macOS: `brew install hudochenkov/sshpass/sshpass`
+   - Linux (Debian/Ubuntu): `sudo apt install -y sshpass`
+
+**Часть Б: Создание и установка SSH-ключа**
+2. Создай SSH-ключ: `ssh-keygen -t ed25519 -C "{username}@{nickname}" -f ~/.ssh/{nickname}_key -N ""`
+3. Установи ключ на сервере одной командой:
    ```
-   ssh {username}@{SERVER_IP} 'mkdir -p ~/.ssh && cat ~/{nickname}_key.pub >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && rm ~/{nickname}_key.pub'
+   sshpass -p '{sudo_password}' ssh-copy-id -i ~/.ssh/{nickname}_key.pub -o StrictHostKeyChecking=accept-new {username}@{SERVER_IP}
    ```
-4. Test key-based login: `ssh -i ~/.ssh/{nickname}_key {username}@{SERVER_IP}` (should work without password)
-5. Add SSH config:
+4. Проверь вход по ключу (должен работать БЕЗ пароля):
+   ```
+   ssh -i ~/.ssh/{nickname}_key {username}@{SERVER_IP} "echo 'SSH key OK'"
+   ```
+5. Добавь SSH-конфиг:
    ```
    cat >> ~/.ssh/config << 'EOF'
 
@@ -921,8 +962,36 @@ Steps:
        IdentitiesOnly yes
    EOF
    ```
-6. Verify: `ssh {nickname}` (should connect without password)
-7. Tell the user: "SSH key configured. Connect with: ssh {nickname}"
+6. Проверь подключение через конфиг: `ssh {nickname} "echo 'Config OK'"`
+
+**Часть В: Финальная защита сервера (fail2ban + блокировка пароля)**
+7. Установи fail2ban:
+   ```
+   ssh {nickname} 'sudo apt install -y fail2ban && sudo tee /etc/fail2ban/jail.local << JAILEOF
+   [DEFAULT]
+   bantime = 1h
+   findtime = 10m
+   maxretry = 5
+
+   [sshd]
+   enabled = true
+   port = ssh
+   filter = sshd
+   logpath = /var/log/auth.log
+   maxretry = 3
+   bantime = 24h
+   JAILEOF
+   sudo systemctl enable fail2ban && sudo systemctl restart fail2ban'
+   ```
+8. Заблокируй парольный вход и root:
+   ```
+   ssh {nickname} 'sudo sed -i "s/^#\?PermitRootLogin.*/PermitRootLogin no/" /etc/ssh/sshd_config && sudo sed -i "s/^#\?PasswordAuthentication.*/PasswordAuthentication no/" /etc/ssh/sshd_config && sudo systemctl restart sshd'
+   ```
+9. Проверь что SSH-ключ всё ещё работает после блокировки:
+   ```
+   ssh {nickname} "grep -E 'PermitRootLogin|PasswordAuthentication' /etc/ssh/sshd_config && sudo systemctl status fail2ban --no-pager && echo 'Сервер полностью защищён!'"
+   ```
+10. Скажи пользователю: "Готово! SSH-ключ настроен, fail2ban установлен, парольный вход отключён. Подключайся: ssh {nickname}"
 ~~~
 
 ---
@@ -990,17 +1059,17 @@ SSH-туннель к админке:
 4. **If connection drops** after password change -- reconnect, this is normal
 5. **If Step 6 fails** -- fix it before proceeding, keep root session open
 6. **Generate SSH key BEFORE first connection** -- more efficient workflow
-7. **All operations after Step 7 use sudo** -- not root
+7. **All operations after Step 6 use sudo** -- not root
+8. **Steps 7 and 9 are DEFERRED** -- SSH lockdown and fail2ban are installed at the very end (Step 22)
 
 ### Part 2 (VPN)
-8. **NEVER expose panel to internet** -- access only via SSH tunnel
-9. **NEVER skip firewall configuration** -- only open needed ports
-10. **ALWAYS save panel credentials** -- show them once, clearly
-11. **ALWAYS verify connection works** before declaring success
-12. **Ask before every destructive or irreversible action**
-13. **ALWAYS generate guide file** (Step 22) -- the user's single source of truth
-14. **Local Mode: do NOT lock SSH in Step 7** -- keep password auth until Step 22
-15. **Local Mode: lock SSH LAST** (Step 22L-6) -- only after user confirms key works
+9. **NEVER expose panel to internet** -- access only via SSH tunnel
+10. **NEVER skip firewall configuration** -- only open needed ports
+11. **ALWAYS save panel credentials** -- show them once, clearly
+12. **ALWAYS verify connection works** before declaring success
+13. **Ask before every destructive or irreversible action**
+14. **ALWAYS generate guide file** (Step 22) -- the user's single source of truth
+15. **Lock SSH + install fail2ban LAST** (Step 22) -- only after SSH key access is verified in BOTH modes
 16. **NEVER leave password auth enabled** after setup is complete
 
 ## Troubleshooting
