@@ -14,27 +14,34 @@ if [ ! -d "${HOME}/.claude/skills" ]; then
     mkdir -p "${HOME}/.claude/skills"
 fi
 
-# Check if skill already exists
-if [ -d "${SKILL_DIR}" ]; then
-    echo "Skill already installed at ${SKILL_DIR}"
-    echo "Updating..."
-    rm -rf "${SKILL_DIR}"
-fi
+# Download into a staging dir FIRST, verify it, and only then replace the
+# installed copy — so a DNS/GitHub/TLS/disk failure can't delete the working
+# skill before a good download exists.
+STAGE=$(mktemp -d)
+trap 'rm -rf "${STAGE}"' EXIT
 
-# Try git clone first, fallback to curl
 if command -v git &> /dev/null; then
     echo "Cloning repository..."
-    TMPDIR=$(mktemp -d)
-    git clone --depth 1 "${REPO_URL}.git" "${TMPDIR}" 2>/dev/null
-    cp -r "${TMPDIR}/skill" "${SKILL_DIR}"
-    rm -rf "${TMPDIR}"
+    git clone --depth 1 "${REPO_URL}.git" "${STAGE}/repo" 2>/dev/null
+    SRC="${STAGE}/repo/skill"
 else
     echo "git not found, downloading via curl..."
-    TMPDIR=$(mktemp -d)
-    curl -sL "${REPO_URL}/archive/refs/heads/main.tar.gz" | tar xz -C "${TMPDIR}"
-    cp -r "${TMPDIR}/3x-ui-skill-main/skill" "${SKILL_DIR}"
-    rm -rf "${TMPDIR}"
+    curl -fsSL "${REPO_URL}/archive/refs/heads/main.tar.gz" | tar xz -C "${STAGE}"
+    SRC="${STAGE}/3x-ui-skill-main/skill"
 fi
+
+# Verify the download before touching the installed copy
+if [ ! -f "${SRC}/SKILL.md" ]; then
+    echo "ERROR: download incomplete (no SKILL.md). Existing install left untouched."
+    exit 1
+fi
+
+# Safe to replace now
+if [ -d "${SKILL_DIR}" ]; then
+    echo "Updating existing install at ${SKILL_DIR} ..."
+    rm -rf "${SKILL_DIR}"
+fi
+cp -r "${SRC}" "${SKILL_DIR}"
 
 echo ""
 echo "Installed to: ${SKILL_DIR}"

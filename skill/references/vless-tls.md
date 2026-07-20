@@ -1,46 +1,40 @@
 # VLESS TLS Setup (with Domain)
 
-Use this when user has a domain and wants VLESS TLS instead of Reality.
+Optional alternative to Reality — use only when the user **has a domain** and specifically wants classic VLESS+TLS instead of the Reality build. The default, recommended path is Reality (`reality-inbound.md`); it needs no domain and resists DPI better. This file is kept for completeness.
+
+Like the rest of setup, commands run as **root over SSH** (`ssh root@{SERVER_IP}`) to avoid non-interactive `sudo` prompts hanging.
 
 ## Prerequisites
 
 - Domain registered and A-record pointing to server IP
 - DNS propagated (verify: `nslookup {domain}` returns server IP)
-- Ports 80 and 443 open in UFW (already done in Step 8)
+- Ports 80 and 443 open in UFW (already done in server setup)
 
 ## Step 1: Verify DNS
 
 ```bash
-nslookup {domain}
+ssh root@{SERVER_IP} "apt-get install -y dnsutils >/dev/null 2>&1; nslookup {domain}"
 ```
 
-Must return the server IP. If not -- wait 5-10 minutes for DNS propagation.
-
-Can also check from server:
-```bash
-ssh {nickname} "sudo apt install -y dnsutils > /dev/null 2>&1; nslookup {domain}"
-```
+Must return the server IP. If not — wait 5-10 minutes for DNS propagation.
 
 ## Step 2: Get SSL Certificate
 
-Use x-ui built-in cert management:
+Easiest is the x-ui built-in menu:
 
 ```bash
-ssh {nickname} "sudo x-ui cert"
+ssh -t root@{SERVER_IP} "x-ui"
 ```
 
-This opens interactive menu. Select:
-1. "Get SSL" (option 1)
-2. Enter domain name
-3. Use port 80 (default)
+Choose **SSL Certificate Management → Get SSL Certificate**, enter the domain, use port 80.
 
-Alternatively, non-interactive with acme.sh:
+Non-interactive alternative with acme.sh. First collect `{user_email}` — any address you control; acme.sh uses it only to register the ACME account. Run as root so `~` resolves to `/root`; register an account (ZeroSSL/Let's Encrypt now require it) and pin Let's Encrypt as the CA:
 
 ```bash
-ssh {nickname} "sudo apt install -y socat && curl https://get.acme.sh | sh && sudo ~/.acme.sh/acme.sh --issue -d {domain} --standalone --httpport 80 && sudo ~/.acme.sh/acme.sh --install-cert -d {domain} --key-file /root/cert/{domain}/privkey.pem --fullchain-file /root/cert/{domain}/fullchain.pem --reloadcmd 'x-ui restart'"
+ssh root@{SERVER_IP} "apt-get install -y socat >/dev/null 2>&1; curl https://get.acme.sh | sh -s email={user_email}; ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt; ~/.acme.sh/acme.sh --issue -d {domain} --standalone --httpport 80; mkdir -p /root/cert/{domain}; ~/.acme.sh/acme.sh --install-cert -d {domain} --key-file /root/cert/{domain}/privkey.pem --fullchain-file /root/cert/{domain}/fullchain.pem --reloadcmd 'x-ui restart'"
 ```
 
-Certificate files will be at:
+Certificate files land at:
 ```
 /root/cert/{domain}/fullchain.pem   # certificate
 /root/cert/{domain}/privkey.pem     # private key
@@ -48,57 +42,49 @@ Certificate files will be at:
 
 ## Step 3: Configure Panel with SSL
 
-Apply certificate to panel:
-
 ```bash
-ssh {nickname} "sudo /usr/local/x-ui/x-ui cert -webCert /root/cert/{domain}/fullchain.pem -webCertKey /root/cert/{domain}/privkey.pem"
-ssh {nickname} "sudo x-ui restart"
+ssh root@{SERVER_IP} "x-ui cert -webCert /root/cert/{domain}/fullchain.pem -webCertKey /root/cert/{domain}/privkey.pem && x-ui restart"
 ```
 
-Panel now serves HTTPS. Access via SSH tunnel:
+Panel now serves HTTPS. Access via SSH tunnel (never open the panel port publicly):
 
 ```bash
 ssh -L {panel_port}:127.0.0.1:{panel_port} {nickname}
 ```
 
-Then open: `https://127.0.0.1:{panel_port}/{web_base_path}` (browser will warn about certificate mismatch -- this is expected, accept it).
+Then open `https://127.0.0.1:{panel_port}/{web_base_path}` (accept the certificate warning over the tunnel).
 
 ## Step 4: Change Panel Credentials
 
-Connection is encrypted (SSH tunnel + HTTPS), safe to set custom credentials:
+Prefer setting these in the panel UI over the tunnel. If using the CLI, note the password is briefly visible in the server process list — acceptable on a single-tenant VPS:
 
 ```bash
-ssh {nickname} "sudo x-ui setting -username {new_username} -password {new_password}"
-ssh {nickname} "sudo x-ui restart"
+ssh root@{SERVER_IP} "x-ui setting -username {new_username} -password {new_password} && x-ui restart"
 ```
 
 ## Step 5: Enable 2FA in Panel (Recommended)
 
-Tell user to:
-1. Open panel via SSH tunnel: `https://127.0.0.1:{panel_port}/{web_base_path}`
-2. Go to Settings -> Account
-3. Enable "Two-Factor Authentication"
-4. Scan QR with authenticator app (Google Authenticator, Microsoft Authenticator)
-5. Enter 6-digit code to confirm
+Over the tunnel: Settings → Account → enable Two-Factor Authentication, scan the QR with an authenticator app, confirm the 6-digit code.
 
 ## Step 6: Create VLESS TLS Inbound
 
-Login to API:
+Login to the API (panel is HTTPS after Step 3):
 
 ```bash
-ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "https://127.0.0.1:${PANEL_PORT}/{web_base_path}/login" -H "Content-Type: application/x-www-form-urlencoded" -d "username={panel_username}&password={panel_password}"'
+ssh root@{SERVER_IP} 'P={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "https://127.0.0.1:${P}/{web_base_path}/login" -H "Content-Type: application/x-www-form-urlencoded" -d "username={panel_username}&password={panel_password}"'
 ```
 
-Generate UUID:
+Generate a UUID and a subscription id (expand the glob inside a root shell — M6). Save both — the API body and the connection link below use them verbatim:
 
 ```bash
-ssh {nickname} "sudo /usr/local/x-ui/bin/xray-linux-* uuid"
+ssh root@{SERVER_IP} 'bash -c "/usr/local/x-ui/bin/xray-linux-* uuid"'   # → {CLIENT_UUID}
+ssh root@{SERVER_IP} "tr -dc 'a-z0-9' </dev/urandom | head -c 16; echo"   # → {SUBID}
 ```
 
-Create VLESS TLS inbound on port 443:
+Create the VLESS TLS inbound on port 443:
 
 ```bash
-ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "https://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/add" -H "Content-Type: application/json" -d '"'"'{
+ssh root@{SERVER_IP} 'P={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-cookie -X POST "https://127.0.0.1:${P}/{web_base_path}/panel/api/inbounds/add" -H "Content-Type: application/json" -d '"'"'{
   "up": 0,
   "down": 0,
   "total": 0,
@@ -108,7 +94,7 @@ ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-c
   "listen": "",
   "port": 443,
   "protocol": "vless",
-  "settings": "{\"clients\":[{\"id\":\"{CLIENT_UUID}\",\"flow\":\"xtls-rprx-vision\",\"email\":\"user1\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true}],\"decryption\":\"none\",\"fallbacks\":[]}",
+  "settings": "{\"clients\":[{\"id\":\"{CLIENT_UUID}\",\"flow\":\"xtls-rprx-vision\",\"email\":\"user1\",\"limitIp\":0,\"totalGB\":0,\"expiryTime\":0,\"enable\":true,\"subId\":\"{SUBID}\"}],\"decryption\":\"none\",\"fallbacks\":[]}",
   "streamSettings": "{\"network\":\"tcp\",\"security\":\"tls\",\"externalProxy\":[],\"tlsSettings\":{\"serverName\":\"{domain}\",\"minVersion\":\"1.2\",\"maxVersion\":\"1.3\",\"cipherSuites\":\"\",\"rejectUnknownSni\":false,\"disableSystemRoot\":false,\"enableSessionResumption\":false,\"certificates\":[{\"certificateFile\":\"/root/cert/{domain}/fullchain.pem\",\"keyFile\":\"/root/cert/{domain}/privkey.pem\",\"ocspStapling\":3600,\"oneTimeLoading\":false,\"usage\":\"encipherment\",\"buildChain\":false}],\"alpn\":[\"h2\",\"http/1.1\"]},\"tcpSettings\":{\"acceptProxyProtocol\":false,\"header\":{\"type\":\"none\"}}}",
   "sniffing": "{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\",\"fakedns\"],\"metadataOnly\":false,\"routeOnly\":false}",
   "allocate": "{\"strategy\":\"always\",\"refresh\":5,\"concurrency\":3}"
@@ -117,37 +103,24 @@ ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -c /tmp/3x-cookie -b /tmp/3x-c
 
 ## Step 7: Get Connection Link
 
-```bash
-ssh {nickname} 'PANEL_PORT={panel_port}; curl -sk -b /tmp/3x-cookie "https://127.0.0.1:${PANEL_PORT}/{web_base_path}/panel/api/inbounds/list" | python3 -c "
-import json,sys
-data = json.load(sys.stdin)
-for inb in data.get(\"obj\", []):
-    if inb.get(\"protocol\") == \"vless\" and \"tls\" in inb.get(\"streamSettings\", \"\"):
-        settings = json.loads(inb[\"settings\"])
-        stream = json.loads(inb[\"streamSettings\"])
-        client = settings[\"clients\"][0]
-        uuid = client[\"id\"]
-        port = inb[\"port\"]
-        sni = stream.get(\"tlsSettings\", {}).get(\"serverName\", \"\")
-        flow = client.get(\"flow\", \"\")
-        link = f\"vless://{uuid}@{sni}:{port}?type=tcp&security=tls&sni={sni}&fp=chrome&flow={flow}#vless-tls\"
-        print(link)
-        break
-"'
+The link uses `fp=firefox` — the June-2026 DPI wave flags `chrome`/`safari` fingerprints:
+
+```
+vless://{CLIENT_UUID}@{domain}:443?type=tcp&security=tls&sni={domain}&fp=firefox&flow=xtls-rprx-vision#vless-tls
 ```
 
-## Step 8: Auto-Renew Certificate via Crontab
+If you enabled the subscription (`subscription.md`) and gave this client the shared `{SUBID}`, the link is served through the subscription URL alongside the Reality profiles.
 
-Certificate renews automatically via acme.sh cron job. But ensure port 80 stays open (already done by server-setup).
+## Step 8: Auto-Renew Certificate
 
-Verify auto-renewal is configured:
+acme.sh installs a root cron job for renewal. Verify:
 
 ```bash
-ssh {nickname} "sudo crontab -l 2>/dev/null | grep acme"
+ssh root@{SERVER_IP} "crontab -l 2>/dev/null | grep acme"
 ```
 
-Should show a cron entry for acme.sh renewal.
+Should show an acme.sh renewal entry. Keep port 80 open for the renewal challenge.
 
 ## Completion
 
-After getting the link, return to main SKILL.md Step 20 (Install Hiddify).
+After getting the link, continue to the client section (`client-happ.md`) to install Happ and import the connection.
